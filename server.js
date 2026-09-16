@@ -126,8 +126,14 @@ function stripCodeFence(text) {
 // numbers recovered from an image.
 // ---------------------------------------------------------------------------
 
-const MAX_VISUALS_IN_PROMPT = 12;
-const MAX_CHARS_PER_VISUAL = 1200;
+// High enough to cover a full dashboard page — the point of this path is to
+// read everything on screen, not a sample of it. The per-visual cap is
+// deliberately tight: for "what is this telling me?" the top few rows carry
+// the story, and trimming the payload cuts response time substantially,
+// because the model's reasoning scales with how much data it is handed.
+const MAX_VISUALS_IN_PROMPT = 25;
+const MAX_CHARS_PER_VISUAL = 450;
+const MAX_STATE_CHARS = 6000;
 
 function describeFilters(filters) {
   if (!Array.isArray(filters) || filters.length === 0) return "none";
@@ -161,7 +167,7 @@ function renderReportState(state) {
   if ((state.visuals || []).length > MAX_VISUALS_IN_PROMPT) {
     lines.push(`\n(${state.visuals.length - MAX_VISUALS_IN_PROMPT} further visuals omitted.)`);
   }
-  return lines.join("\n");
+  return lines.join("\n").slice(0, MAX_STATE_CHARS);
 }
 
 app.post("/api/chat/visual", async (req, res) => {

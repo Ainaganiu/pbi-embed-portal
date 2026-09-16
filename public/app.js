@@ -60,6 +60,8 @@
     return q.trim().split(/\s+/).length <= 6;
   }
 
+  const DECORATIVE = ["shape", "image", "textbox", "actionButton", "basicShape"];
+
   async function captureReportState() {
     if (!embeddedReport) throw new Error("The report isn't loaded yet.");
 
@@ -69,33 +71,40 @@
 
     const state = { pageName: page.displayName, reportFilters: [], pageFilters: [], visuals: [] };
 
-    // Filters are best-effort: a report can legitimately have none, and some
-    // embed configurations refuse the call outright.
-    try { state.reportFilters = await embeddedReport.getFilters(); } catch { /* none available */ }
-    try { state.pageFilters = await page.getFilters(); } catch { /* none available */ }
+    // Everything below is read concurrently. Each of these is a round trip
+    // into the embed iframe, so doing them in series made a busy page feel
+    // sluggish before the model was even called.
+    const noFail = (p) => Promise.resolve(p).catch(() => null);
 
-    const visuals = await page.getVisuals();
-    for (const v of visuals) {
-      // Skip pure decoration — it costs a round trip and tells the model nothing.
-      if (["shape", "image", "textbox", "actionButton"].includes(v.type)) continue;
+    const [reportFilters, pageFilters, visuals] = await Promise.all([
+      noFail(embeddedReport.getFilters()),
+      noFail(page.getFilters()),
+      page.getVisuals(),
+    ]);
+    state.reportFilters = reportFilters || [];
+    state.pageFilters = pageFilters || [];
 
-      const entry = { title: v.title || v.name, type: v.type };
-      try {
-        if (v.type === "slicer") {
-          const slicer = await v.getSlicerState();
-          const values = (slicer.filters || [])
-            .flatMap((f) => f.values || [])
-            .join(", ");
-          entry.slicerState = values || "(no selection — showing all)";
-        } else {
-          const result = await v.exportData(models().ExportDataType.Summarized, 30);
-          entry.data = result && result.data ? result.data : null;
+    const interesting = visuals.filter((v) => !DECORATIVE.includes(v.type));
+
+    state.visuals = await Promise.all(
+      interesting.map(async (v) => {
+        const entry = { title: v.title || v.name, type: v.type };
+        try {
+          if (v.type === "slicer") {
+            const slicer = await v.getSlicerState();
+            const values = (slicer.filters || []).flatMap((f) => f.values || []).join(", ");
+            entry.slicerState = values || "(no selection — showing all)";
+          } else {
+            const result = await v.exportData(models().ExportDataType.Summarized, 10);
+            entry.data = result && result.data ? result.data : null;
+          }
+        } catch (err) {
+          entry.error = err && err.message ? err.message : "not readable";
         }
-      } catch (err) {
-        entry.error = err && err.message ? err.message : "not readable";
-      }
-      state.visuals.push(entry);
-    }
+        return entry;
+      })
+    );
+
     return state;
   }
 
@@ -508,6 +517,15 @@
     if (!question || !currentReportId) return;
     chatInput.value = "";
     askQuestion(question);
+  });
+
+  // Suggested prompts — one click to a useful first question, and they double
+  // as a hint that the panel understands "what's on screen" as well as data.
+  document.querySelectorAll("#chat-suggestions .suggestion").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (!currentReportId) return;
+      askQuestion(btn.dataset.q);
+    });
   });
 
   // ---------- branding ----------
