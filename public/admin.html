@@ -179,6 +179,11 @@
           <input id="report-dataset-id" type="text" />
         </div>
         <div class="field">
+          <label for="report-problem">Problem statement / business context (optional)</label>
+          <textarea id="report-problem" rows="5" placeholder="What is this dashboard for? Who uses it, what decisions does it support, and what questions is it meant to answer? The AI keeps this in mind on every question, so answers stay relevant to the business goal."></textarea>
+          <div class="hint">Why the project exists — distinct from the schema below, which is what the data <em>is</em>.</div>
+        </div>
+        <div class="field">
           <label for="report-schema">Data description for AI (optional — needed for chat)</label>
           <textarea id="report-schema" rows="6" placeholder="Describe this dashboard's tables, columns, and measures so the AI can write accurate DAX for it."></textarea>
         </div>

@@ -1054,3 +1054,20 @@ button {
   gap: 0.6rem;
   align-items: center;
 }
+
+/* visual-context answers */
+
+.thinking-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+
+.visual-context {
+  margin-top: 0.6rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--border-strong);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  line-height: 1.4;
+}

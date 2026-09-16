@@ -235,6 +235,7 @@
     $("report-report-id").value = editing ? report.reportId : "";
     $("report-dataset-id").value = editing ? report.datasetId || "" : "";
     $("report-schema").value = editing ? report.schemaDescription || "" : "";
+    $("report-problem").value = editing ? report.problemStatement || "" : "";
     $("report-id").focus();
     resetBrowsePicker();
     loadWorkspaces();
@@ -344,6 +345,7 @@
       reportId: $("report-report-id").value.trim(),
       datasetId: $("report-dataset-id").value.trim() || null,
       schemaDescription: $("report-schema").value.trim() || null,
+      problemStatement: $("report-problem").value.trim() || null,
     };
 
     try {

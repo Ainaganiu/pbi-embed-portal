@@ -99,9 +99,165 @@ app.get("/api/embed-token/:id", async (req, res) => {
 const MAX_RESULT_ROWS = 50;
 const MAX_RESULT_CHARS = 20_000;
 
+// Business context the admin wrote for a report. It's cached in memory with
+// the rest of the report config, and prepended to every prompt so answers stay
+// anchored to what the dashboard is actually for.
+function problemContext(report) {
+  if (!report.problemStatement) return "";
+  return `Business context for this dashboard — keep this in mind throughout:
+${report.problemStatement}
+
+`;
+}
+
 function stripCodeFence(text) {
   return text.replace(/^```[a-zA-Z]*\n?/, "").replace(/```\s*$/, "").trim();
 }
+
+// ---------------------------------------------------------------------------
+// Visual-context path: answering "what is this telling me?" about whatever the
+// user currently has on screen.
+//
+// Power BI renders into a cross-origin iframe, so the page's pixels can't be
+// read client-side, and this tenant has report-to-image export disabled. So
+// instead of a screenshot we take the structured state the embed SDK does
+// expose — active page, filters/slicers, and each visual's own exported data —
+// and reason over that. It also means the model sees exact figures rather than
+// numbers recovered from an image.
+// ---------------------------------------------------------------------------
+
+const MAX_VISUALS_IN_PROMPT = 12;
+const MAX_CHARS_PER_VISUAL = 1200;
+
+function describeFilters(filters) {
+  if (!Array.isArray(filters) || filters.length === 0) return "none";
+  return filters
+    .map((f) => {
+      const col = f?.target?.column || f?.target?.measure || f?.target?.hierarchy || "filter";
+      const table = f?.target?.table ? `${f.target.table}.` : "";
+      const values = Array.isArray(f.values) ? f.values.join(", ") : f.value ?? "";
+      const op = f.operator || f.conditions?.[0]?.operator || "is";
+      return `${table}${col} ${op} ${values}`.trim();
+    })
+    .join("; ");
+}
+
+function renderReportState(state) {
+  const lines = [];
+  lines.push(`Active page: ${state.pageName || "(unknown)"}`);
+  lines.push(`Report-level filters: ${describeFilters(state.reportFilters)}`);
+  lines.push(`Page-level filters: ${describeFilters(state.pageFilters)}`);
+
+  const visuals = (state.visuals || []).slice(0, MAX_VISUALS_IN_PROMPT);
+  lines.push(`\nVisuals currently on this page (${(state.visuals || []).length}):`);
+
+  visuals.forEach((v, i) => {
+    lines.push(`\n${i + 1}. "${v.title || "(untitled)"}" — ${v.type || "unknown type"}`);
+    if (v.slicerState) lines.push(`   slicer selection: ${v.slicerState}`);
+    if (v.error) lines.push(`   (data unavailable: ${v.error})`);
+    else if (v.data) lines.push(`   data:\n${String(v.data).slice(0, MAX_CHARS_PER_VISUAL)}`);
+  });
+
+  if ((state.visuals || []).length > MAX_VISUALS_IN_PROMPT) {
+    lines.push(`\n(${state.visuals.length - MAX_VISUALS_IN_PROMPT} further visuals omitted.)`);
+  }
+  return lines.join("\n");
+}
+
+app.post("/api/chat/visual", async (req, res) => {
+  const { reportId, question, state } = req.body || {};
+
+  let settings, report;
+  try {
+    settings = await getSettings();
+    report = await getReport(reportId);
+  } catch (err) {
+    return settingsUnavailable(res, err);
+  }
+  if (!report) {
+    return res.status(404).json({ error: `Unknown report "${reportId}"` });
+  }
+  if (!question || typeof question !== "string") {
+    return res.status(400).json({ error: "Missing question" });
+  }
+
+  const provider = getProvider({
+    provider: settings.llmProvider,
+    apiKey: settings.llmApiKey,
+    model: settings.llmModel,
+    apiBase: settings.llmApiBase,
+  });
+  if (!provider) {
+    return res.status(400).json({ error: `Chat is not enabled for report "${reportId}"` });
+  }
+
+  const stateText = renderReportState(state || {});
+
+  try {
+    const answer = await provider.complete({
+      system:
+        problemContext(report) +
+        `You are an experienced data analyst reviewing a Power BI report on ` +
+        `behalf of a business user who is looking at it right now.\n\n` +
+        `You will be shown the current state of the report page they have ` +
+        `open — the active page, the filters and slicers they have applied, ` +
+        `and each visual on that page together with the data it is currently ` +
+        `displaying — along with their question.\n\n` +
+        `When you respond:\n` +
+        `- Speak to what matters, not what's visible. Don't narrate chart ` +
+        `types or describe the layout ("there is a bar chart showing…") — go ` +
+        `straight to what the data means.\n` +
+        `- Lead with the headline. State the single most important takeaway ` +
+        `first, in one sentence, before any supporting detail.\n` +
+        `- Read the whole page as one picture, not chart-by-chart. If ` +
+        `multiple visuals are shown, connect them — note where they agree, ` +
+        `where they contradict, and what that combination implies.\n` +
+        `- Flag what's notable. Call out outliers, inflection points, or ` +
+        `numbers that look off given the current filters — but only if they ` +
+        `are actually present in the data below. Never invent a number you ` +
+        `cannot see.\n` +
+        `- Respect the current filter/slicer state. Frame your answer in ` +
+        `terms of what is actually being shown ("for the filters currently ` +
+        `applied…"), not the dataset as a whole.\n` +
+        `- Match the question's scope. A broad question ("what is this ` +
+        `telling me?") gets a short, prioritized summary — 2-4 sentences, ` +
+        `most important first. A specific question about one part of the ` +
+        `screen gets a direct, focused answer, not a full-page recap.\n` +
+        `- Say what you can't see. If the question asks about something not ` +
+        `present in the current view (a different page, a filter that isn't ` +
+        `applied), say so plainly rather than guessing.\n` +
+        `- No jargon, no hedging filler. Write like you're briefing a ` +
+        `colleague who needs the point, not a caveat-laden disclaimer.\n\n` +
+        `Keep the full response under 100 words unless the user's question ` +
+        `explicitly asks for more detail. Reply with prose only — no JSON, ` +
+        `no markdown headings.\n\n` +
+        `Background on the underlying model (for context only; the current ` +
+        `view above is what the user is asking about):\n` +
+        `${(report.schemaDescription || "(not described)").slice(0, 2500)}`,
+      messages: [
+        { role: "user", content: `Current report state:\n${stateText}\n\nQuestion: ${question}` },
+      ],
+      maxTokens: 5000,
+    });
+
+    res.json({
+      answer: answer.trim(),
+      chart: null,
+      visualContext: {
+        pageName: state?.pageName || null,
+        visualCount: (state?.visuals || []).length,
+        // Report- and page-level filters both narrow what's on screen, so the
+        // "what was read" line has to account for both.
+        filters: describeFilters([
+          ...(state?.reportFilters || []),
+          ...(state?.pageFilters || []),
+        ]),
+      },
+    });
+  } catch (err) {
+    res.status(502).json({ error: `Visual analysis failed: ${err.message}` });
+  }
+});
 
 // Question -> DAX -> query -> text answer + optional chart spec.
 app.post("/api/chat", async (req, res) => {
@@ -139,6 +295,7 @@ app.post("/api/chat", async (req, res) => {
   const schemaDescription = report.schemaDescription;
 
   const daxSystemPrompt =
+    problemContext(report) +
     `You are a DAX query generator for a Power BI dataset. Given a question, ` +
     `return ONLY a single valid DAX query (an EVALUATE statement) that ` +
     `answers it. No prose, no markdown fences, no explanation.\n\n` +
@@ -233,6 +390,7 @@ app.post("/api/chat", async (req, res) => {
   try {
     const raw = await provider.complete({
       system:
+        problemContext(report) +
         `You are a data analyst presenting findings to a business audience. ` +
         `You are given a question and the raw result rows (JSON) from a Power ` +
         `BI query. Respond with ONLY a JSON object of the form:\n` +

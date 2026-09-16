@@ -22,6 +22,7 @@
 
   let reports = [];
   let currentReportId = null;
+  let embeddedReport = null; // powerbi-client Report, for reading live state
 
   // ---------- tiny helpers ----------
 
@@ -29,6 +30,73 @@
     const div = document.createElement("div");
     div.textContent = str;
     return div.innerHTML;
+  }
+
+
+  // ---------- visual context: reading the live report state ----------
+  //
+  // Power BI renders in a cross-origin iframe, so its pixels can't be
+  // screenshotted from here. The embed SDK does expose the structured state
+  // though — active page, filters/slicers, and each visual's own data — which
+  // is both cheaper than a vision model and exact rather than OCR'd.
+
+  const models = () => window["powerbi-client"].models;
+
+  // Routing between the two paths. An explicit reference to what's on screen
+  // ("this page", "the dashboard") is treated as decisive, because the user is
+  // telling us they mean the current view even if they also use a data word
+  // like "trend". Otherwise an open-ended ask goes visual, a measurable one
+  // goes to the query pipeline. Genuinely ambiguous short asks prefer the
+  // visual path: describing the wrong thing is cheaper to recover from than
+  // quoting a confidently wrong number.
+  const SCREEN_REFERENCE = /(this|these|current|currently|on screen|on-screen|this page|the page|the dashboard|the report|the view|here)/i;
+  const OPEN_ENDED = /(summar|overview|walk me through|what am i looking at|explain|interpret|insight|stand out|standing out|notable|going on|tell me about)/i;
+  const SPECIFIC_QUESTION = /(how many|how much|total|count|sum|average|top \d+|bottom \d+|compare|by (year|month|quarter|region|category|channel|publisher|genre))/i;
+
+  function isVisualQuestion(q) {
+    if (SCREEN_REFERENCE.test(q)) return true;
+    if (OPEN_ENDED.test(q)) return !SPECIFIC_QUESTION.test(q);
+    if (SPECIFIC_QUESTION.test(q)) return false;
+    return q.trim().split(/\s+/).length <= 6;
+  }
+
+  async function captureReportState() {
+    if (!embeddedReport) throw new Error("The report isn't loaded yet.");
+
+    const pages = await embeddedReport.getPages();
+    const page = pages.find((p) => p.isActive) || pages[0];
+    if (!page) throw new Error("No active report page.");
+
+    const state = { pageName: page.displayName, reportFilters: [], pageFilters: [], visuals: [] };
+
+    // Filters are best-effort: a report can legitimately have none, and some
+    // embed configurations refuse the call outright.
+    try { state.reportFilters = await embeddedReport.getFilters(); } catch { /* none available */ }
+    try { state.pageFilters = await page.getFilters(); } catch { /* none available */ }
+
+    const visuals = await page.getVisuals();
+    for (const v of visuals) {
+      // Skip pure decoration — it costs a round trip and tells the model nothing.
+      if (["shape", "image", "textbox", "actionButton"].includes(v.type)) continue;
+
+      const entry = { title: v.title || v.name, type: v.type };
+      try {
+        if (v.type === "slicer") {
+          const slicer = await v.getSlicerState();
+          const values = (slicer.filters || [])
+            .flatMap((f) => f.values || [])
+            .join(", ");
+          entry.slicerState = values || "(no selection — showing all)";
+        } else {
+          const result = await v.exportData(models().ExportDataType.Summarized, 30);
+          entry.data = result && result.data ? result.data : null;
+        }
+      } catch (err) {
+        entry.error = err && err.message ? err.message : "not readable";
+      }
+      state.visuals.push(entry);
+    }
+    return state;
   }
 
   // ---------- enlarge modal ----------
@@ -185,6 +253,7 @@
         },
       });
 
+      embeddedReport = embedded;
       embedded.off("error");
       embedded.on("error", () => {
         setReportState(`<p>This report's embed token has expired. Reload the page to keep viewing it — this MVP doesn't auto-refresh tokens.</p>`);
@@ -268,12 +337,27 @@
 
   let daxCounter = 0;
 
-  function renderAnswerRow(row, { answer, chart, dax }) {
+  function renderAnswerRow(row, result) {
+    const { answer, chart, dax } = result;
     daxCounter += 1;
     const daxId = `dax-${daxCounter}`;
     const bubble = row.querySelector(".chat-bubble");
     bubble.classList.remove("error");
     bubble.innerHTML = renderMarkdown(answer || "(no answer)");
+
+    // For visual-context answers, show what was actually read so the user can
+    // see the answer refers to the view they're looking at.
+    if (result.visualContext) {
+      const vc = result.visualContext;
+      const parts = [];
+      if (vc.pageName) parts.push(vc.pageName);
+      parts.push(`${vc.visualCount} visual${vc.visualCount === 1 ? "" : "s"}`);
+      if (vc.filters && vc.filters !== "none") parts.push(`filters: ${vc.filters}`);
+      const ctx = document.createElement("div");
+      ctx.className = "visual-context";
+      ctx.textContent = `Read from the current view — ${parts.join(" · ")}`;
+      bubble.appendChild(ctx);
+    }
 
     if (dax) {
       const disclosure = document.createElement("div");
@@ -372,14 +456,40 @@
     chatLog.scrollTop = chatLog.scrollHeight;
   }
 
+  function setThinking(row, label) {
+    row.innerHTML =
+      `<div class="chat-bubble">` +
+      (label ? `<div class="thinking-label">${escapeHtml(label)}</div>` : "") +
+      `<span class="typing-dots"><span></span><span></span><span></span></span></div>`;
+  }
+
   async function runAnswer(row, question) {
-    row.innerHTML = `<div class="chat-bubble"><span class="typing-dots"><span></span><span></span><span></span></span></div>`;
+    const visual = isVisualQuestion(question);
+    setThinking(row, visual ? "Reading the current view…" : null);
+
     try {
-      const result = await fetchJson("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reportId: currentReportId, question }),
-      });
+      let result;
+      if (visual) {
+        let state;
+        try {
+          state = await captureReportState();
+        } catch (err) {
+          // Couldn't read the visuals — fall back to whatever page/filter
+          // metadata we do have rather than failing the question outright.
+          state = { captureError: err.message, visuals: [] };
+        }
+        result = await fetchJson("/api/chat/visual", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reportId: currentReportId, question, state }),
+        });
+      } else {
+        result = await fetchJson("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reportId: currentReportId, question }),
+        });
+      }
       renderAnswerRow(row, result);
     } catch (err) {
       renderErrorRow(row, err.message, () => runAnswer(row, question));
