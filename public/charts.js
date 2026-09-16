@@ -263,7 +263,52 @@
     if (caption) wrap.append("div").attr("class", "chart-card-caption").text(caption);
   }
 
-  const RENDERERS = { bar: renderBar, line: renderLine, pie: renderPie, card: renderCard };
+  // A table is the right answer when the point is the values themselves —
+  // several columns, or too many rows to read off a chart.
+  function renderTable(container, spec, width) {
+    const wrap = d3.select(container).append("div").attr("class", "chart-table-wrap");
+    const table = wrap.append("table").attr("class", "chart-table");
+
+    // Accepts either the generic labels/values pair or full rows+columns.
+    const columns =
+      Array.isArray(spec.columns) && spec.columns.length
+        ? spec.columns
+        : [spec.label || "Item", "Value"];
+    const rows =
+      Array.isArray(spec.rows) && spec.rows.length
+        ? spec.rows
+        : (spec.labels || []).map((l, i) => [l, spec.values ? spec.values[i] : ""]);
+
+    table
+      .append("thead")
+      .append("tr")
+      .selectAll("th")
+      .data(columns)
+      .join("th")
+      .text((d) => d);
+
+    table
+      .append("tbody")
+      .selectAll("tr")
+      .data(rows)
+      .join("tr")
+      .selectAll("td")
+      .data((row) => (Array.isArray(row) ? row : [row]))
+      .join("td")
+      // Right-align numbers so columns of figures line up and stay scannable.
+      .attr("class", (d) => (typeof d === "number" || /^-?[\d.,]+%?$/.test(String(d)) ? "num" : ""))
+      .text((d) => (typeof d === "number" ? d.toLocaleString() : d));
+
+    wrap.style("max-width", width + "px");
+  }
+
+  const RENDERERS = {
+    bar: renderBar,
+    line: renderLine,
+    pie: renderPie,
+    card: renderCard,
+    table: renderTable,
+  };
 
   function renderChart(container, spec, opts = {}) {
     container.innerHTML = "";
@@ -277,7 +322,10 @@
     const labels = Array.isArray(spec.labels) ? spec.labels : [];
 
     // A card needs no labels; every other type needs matched label/value pairs.
-    if (type !== "card" && (!labels.length || !values.length)) return;
+    // A card needs no labels, and a table can carry its own rows/columns
+    // instead of the labels/values pair.
+    const tableHasRows = type === "table" && Array.isArray(spec.rows) && spec.rows.length;
+    if (type !== "card" && !tableHasRows && (!labels.length || !values.length)) return;
 
     RENDERERS[type](container, { ...spec, labels, values }, width, height);
   }

@@ -1186,3 +1186,94 @@ button {
   color: var(--danger);
   background: var(--danger-soft);
 }
+
+
+/* table — when the values themselves are the point */
+
+.chart-table-wrap {
+  margin-top: 0.1rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.chart-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.chart-table th {
+  text-align: left;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  background: var(--bg);
+  padding: 0.4rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.chart-table td {
+  padding: 0.35rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.chart-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.chart-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* clarifying questions with selectable answers */
+
+.clarify-questions {
+  margin-top: 0.7rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--accent-soft-border);
+}
+
+.clarify-q + .clarify-q {
+  margin-top: 0.6rem;
+}
+
+.clarify-ask {
+  font-size: 0.78rem;
+  font-weight: 600;
+  margin-bottom: 0.3rem;
+  color: var(--text);
+}
+
+.clarify-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.clarify-options .suggestion.chosen {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.clarify-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
+
+.clarify-actions .btn-primary {
+  padding: 0.35rem 0.8rem;
+  font-size: 0.78rem;
+}
+
+.clarify-note {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}

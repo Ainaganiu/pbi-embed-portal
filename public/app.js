@@ -514,6 +514,88 @@
 
   let daxCounter = 0;
 
+  // An ambiguous question comes back as one or more questions with suggested
+  // answers. Rendering them as chips means a comparison can be pinned down in
+  // one interaction instead of several slow round trips.
+  function renderClarifyOptions(bubble, result, row) {
+    const questions = Array.isArray(result.questions) ? result.questions : [];
+    // A single question with no options is just prose — the bubble already
+    // shows it, so there's nothing to add.
+    if (!questions.length || (questions.length === 1 && !questions[0].options.length)) return;
+
+    const picked = new Map();
+    const wrap = document.createElement("div");
+    wrap.className = "clarify-questions";
+
+    questions.forEach((q, i) => {
+      const block = document.createElement("div");
+      block.className = "clarify-q";
+
+      // With one question the bubble text already asks it; repeating it reads
+      // like a stutter.
+      if (questions.length > 1) {
+        const label = document.createElement("div");
+        label.className = "clarify-ask";
+        label.textContent = q.ask;
+        block.appendChild(label);
+      }
+
+      const opts = document.createElement("div");
+      opts.className = "clarify-options";
+      q.options.forEach((opt) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "suggestion";
+        chip.textContent = opt;
+        chip.addEventListener("click", () => {
+          picked.set(i, opt);
+          opts.querySelectorAll(".suggestion").forEach((c) => c.classList.remove("chosen"));
+          chip.classList.add("chosen");
+          submit.disabled = false;
+        });
+        opts.appendChild(chip);
+      });
+
+      block.appendChild(opts);
+      wrap.appendChild(block);
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "clarify-actions";
+    const submit = document.createElement("button");
+    submit.type = "button";
+    submit.className = "btn-primary";
+    submit.style.width = "auto";
+    submit.textContent = "Continue";
+    submit.disabled = true;
+    actions.appendChild(submit);
+
+    const note = document.createElement("span");
+    note.className = "clarify-note";
+    note.textContent = "or type your own answer";
+    actions.appendChild(note);
+    wrap.appendChild(actions);
+
+    submit.addEventListener("click", () => {
+      // Only the chosen values, not the questions. Echoing "Compare against
+      // what? Year over year" reads as another question and the model asks
+      // again instead of answering.
+      const answers = questions
+        .map((q, i) => (picked.has(i) ? picked.get(i) : null))
+        .filter(Boolean)
+        .join(", ");
+
+      // Resend the original question with the answers attached rather than
+      // relying on history — this still resolves if the transcript was
+      // truncated or cleared.
+      const original = pendingClarifyQuestion || "";
+      wrap.remove();
+      askQuestion(original ? `${original} — ${answers}` : answers);
+    });
+
+    bubble.appendChild(wrap);
+  }
+
   function renderAnswerRow(row, result) {
     const { answer, chart, dax } = result;
     daxCounter += 1;
@@ -527,6 +609,7 @@
     // A clarifying question is a prompt to the user, not a finding — mark it
     // as such and put the cursor back in the input so they can just reply.
     if (result.clarify) {
+      renderClarifyOptions(bubble, result, row);
       chatInput.focus();
     }
 
@@ -802,7 +885,12 @@
     }
   }
 
+  // The question a clarification is about, so answering the chips can resend
+  // the original rather than depending on the transcript still being there.
+  let pendingClarifyQuestion = null;
+
   function askQuestion(question) {
+    pendingClarifyQuestion = question;
     appendUserRow(question);
     const row = appendThinkingRow();
     runAnswer(row, question);

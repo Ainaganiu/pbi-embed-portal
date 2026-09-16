@@ -13,7 +13,7 @@ const authRouter = require("./routes/auth");
 const adminRouter = require("./routes/admin");
 const authoringRouter = require("./routes/authoring");
 const { CORE_RULES } = require("./lib/daxSkills");
-const { problemContext, sanitizeHistory, stripCodeFence } = require("./lib/chatHelpers");
+const { problemContext, sanitizeHistory, stripCodeFence, parseClarify } = require("./lib/chatHelpers");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -230,18 +230,25 @@ function buildDaxSystemPrompt(report, opts = {}) {
       : `Ask before guessing. If the question doesn't identify which measure, ` +
         `column, filter or time period it means, and picking wrongly would give ` +
         `a materially different answer, do NOT write a query. Instead reply with ` +
-        `exactly:\n` +
-        `CLARIFY: <one short question naming the options>\n` +
-        `For example "which measure did you mean — revenue or units?" or "which ` +
-        `year should I use?". Offer the real options where you can, but name them ` +
-        `in plain business language — never expose raw measure or column syntax ` +
-        `like [1_ Total Interactions] or 'Table'[Column] to the user. Ask at most ` +
-        `one question, and keep it to a single sentence.\n` +
+        `a single line of exactly this shape:\n` +
+        `CLARIFY: {"questions":[{"ask":"<short question>","options":["<option>","<option>"]}]}\n` +
+        `A comparison is the usual case: "compare these" leaves open what to ` +
+        `compare against, on which measure, and over which period. Ask each ` +
+        `open axis as its own question so they can all be answered at once — ` +
+        `at most 3 questions, each with 2 to 4 options.\n` +
+        `Example: CLARIFY: {"questions":[{"ask":"Compare against what?","options":["The previous year","Other regions","Other genres"]},{"ask":"Using which measure?","options":["Total sales","Number of transactions"]}]}\n` +
+        `Draw the options from what actually exists in the schema, and word ` +
+        `them in plain business language — never expose raw measure or column ` +
+        `syntax like [1_ Total Interactions] or 'Table'[Column].\n` +
         `Do not ask when a sensible reading is obvious: a question naming one ` +
         `measure, or one that clearly means the whole dataset, should just be ` +
         `answered. Earlier turns in the conversation count as context — if they ` +
         `already establish the measure or period, use it rather than asking ` +
-        `again.\n\n`) +
+        `again.\n` +
+        `Never ask twice. If the question already carries the specifics — ` +
+        `typically after an em dash, e.g. "compare the categories — year over ` +
+        `year, by ticket volume" — those ARE the answers to a question you ` +
+        `already asked. Write the query.\n\n`) +
     `Dataset schema:\n${schemaDescription}`
   );
 }
@@ -349,6 +356,13 @@ app.post("/api/chat/visual", async (req, res) => {
         `Overwatch. The underlying model will be queried and you'll be asked ` +
         `again with the results. Only do this when the page genuinely lacks ` +
         `the figures — if it has them, just answer.\n` +
+        `- If the question itself is ambiguous — a comparison that doesn't say ` +
+        `what to compare against, on which measure, or over which period — ` +
+        `don't guess and don't fetch. Make your ENTIRE reply one line:\n` +
+        `CLARIFY: {"questions":[{"ask":"<short question>","options":["<option>","<option>"]}]}\n` +
+        `Ask each open axis separately, at most 3 questions with 2-4 options ` +
+        `each, worded in plain business language. Prefer answering outright ` +
+        `when a sensible reading is obvious.\n` +
         `- No jargon, no hedging filler. Write like you're briefing a ` +
         `colleague who needs the point, not a caveat-laden disclaimer.\n\n` +
         `Keep the full response under 100 words unless the user's question ` +
@@ -378,27 +392,47 @@ app.post("/api/chat/visual", async (req, res) => {
 
       try {
         // Hold the head of the stream back until we know whether this is an
-        // answer or a request for data. NEED_DATA must be the first line, so a
-        // short buffer is enough to tell — and the user sees nothing either way
-        // until we know, so an escalation never flashes partial text.
+        // answer, a request for data, or a question back to the user. Both
+        // markers must be the first line, so a short buffer is enough to tell —
+        // and nothing is shown either way until we know, so neither case ever
+        // flashes partial text.
+        const MARKER = /^\s*(NEED_DATA|CLARIFY):/i;
         let head = "";
-        let escalating = false;
+        let held = false;
         let forwarding = false;
 
         const answer = await provider.completeStream(request, (delta) => {
           if (forwarding) return send({ delta });
           head += delta;
-          if (/^\s*NEED_DATA:/i.test(head)) {
-            escalating = true;
+          if (MARKER.test(head)) {
+            held = true;
             return;
           }
-          // Once there's enough to rule the marker out, release the buffer.
-          if (escalating) return;
+          // Once there's enough to rule the markers out, release the buffer.
+          if (held) return;
           if (head.length >= 24 || /\n/.test(head)) {
             forwarding = true;
             send({ delta: head });
           }
         });
+
+        // Ambiguous question — ask rather than guess or fetch the wrong thing.
+        if (/^\s*CLARIFY:/i.test(answer)) {
+          const questions = parseClarify(answer);
+          return (
+            send({
+              done: true,
+              answer:
+                questions.length > 1
+                  ? "A couple of things would change the answer:"
+                  : questions[0].ask,
+              questions,
+              clarify: true,
+              visualContext,
+            }),
+            res.end()
+          );
+        }
 
         if (!/^\s*NEED_DATA:/i.test(answer)) {
           if (!forwarding) send({ delta: answer }); // shorter than the buffer
@@ -596,10 +630,13 @@ app.post("/api/chat", async (req, res) => {
     // measure, filter or period. Return the question it asked instead of
     // querying — a wrong number presented confidently is worse than a
     // one-line clarification.
-    const clarify = dax.match(/^\s*CLARIFY:\s*(.+)$/is);
-    if (clarify) {
+    if (/^\s*CLARIFY:/i.test(dax)) {
+      const questions = parseClarify(dax);
       return res.json({
-        answer: clarify[1].trim().replace(/\s+/g, " "),
+        // A comparison usually leaves several things open, so each open axis
+        // comes back as its own question with suggested answers.
+        answer: questions.length > 1 ? "A couple of things would change the answer:" : questions[0].ask,
+        questions,
         chart: null,
         clarify: true,
       });
@@ -665,7 +702,9 @@ app.post("/api/chat", async (req, res) => {
         `You are a data analyst presenting findings to a business audience. ` +
         `You are given a question and the raw result rows (JSON) from a Power ` +
         `BI query. Respond with ONLY a JSON object of the form:\n` +
-        `{"answer": "<your analysis, as markdown>", "chart": {"type": "bar"|"line"|"pie"|"card", "labels": [...], "values": [...], "label": "<series or caption label>"} | null}\n\n` +
+        `{"answer": "<your analysis, as markdown>", "chart": {"type": "bar"|"line"|"pie"|"card"|"table", "labels": [...], "values": [...], "label": "<series or caption label>"} | null}\n\n` +
+        `A "table" may instead carry "columns": ["Col A","Col B"] and "rows": ` +
+        `[["a", 1], ["b", 2]] when there is more than one value per item.\n\n` +
         `Write "answer" as a short analyst narrative in three beats:\n` +
         `1. A headline finding on its own line, wrapped in ** ** — the single ` +
         `most important thing the numbers say.\n` +
@@ -692,6 +731,10 @@ app.post("/api/chat", async (req, res) => {
         `- "line": a trend over time or an ordered sequence.\n` +
         `- "pie": parts of a whole, only when there are 2-8 categories that ` +
         `sum to a meaningful total.\n` +
+        `- "table": when the values themselves are the point — more than one ` +
+        `number per item (e.g. this year beside last year, or a count beside ` +
+        `a percentage), or too many rows to read off a chart. Use "columns" ` +
+        `and "rows" for the multi-column case.\n` +
         `Use null only when the answer is genuinely not numeric (e.g. yes/no ` +
         `or a plain text explanation). "labels" and "values" must be the ` +
         `same length for bar, line and pie. Do not include markdown fences.`,
