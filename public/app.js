@@ -362,8 +362,29 @@
     askQuestion(question);
   });
 
+  // ---------- branding ----------
+
+  async function loadBranding() {
+    try {
+      const branding = await fetchJson("/api/branding");
+      if (branding.portalName) {
+        document.getElementById("brand-name").textContent = branding.portalName;
+        document.title = branding.portalName;
+      }
+      if (branding.accentColor) {
+        document.documentElement.style.setProperty("--accent", branding.accentColor);
+      }
+      if (branding.logoDataUri) {
+        document.getElementById("brand-icon").innerHTML = `<img src="${branding.logoDataUri}" alt="" />`;
+      }
+    } catch {
+      // Branding is cosmetic — fall back to defaults silently.
+    }
+  }
+
   // ---------- boot ----------
 
+  loadBranding();
   loadReports().catch((err) => {
     setReportState(`<p>Failed to load reports: ${escapeHtml(err.message)}</p>`);
   });

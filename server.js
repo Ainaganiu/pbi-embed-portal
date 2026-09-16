@@ -1,48 +1,94 @@
 require("dotenv/config");
 const path = require("node:path");
 const express = require("express");
+const session = require("express-session");
 
-const reports = require("./config/reports");
-const schemas = require("./config/schema");
+const { migrate } = require("./lib/db");
+const { getSettings, getReports, getReport } = require("./lib/settings");
 const { generateEmbedToken, executeQuery } = require("./lib/powerbi");
 const { getProvider } = require("./lib/llm");
 const llmCache = require("./lib/llmCache");
+const authRouter = require("./routes/auth");
+const adminRouter = require("./routes/admin");
 
 const app = express();
-app.use(express.json());
+app.set("trust proxy", 1);
+app.use(express.json({ limit: "1mb" }));
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "dev-only-insecure-secret",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    },
+  })
+);
 app.use(express.static(path.join(__dirname, "public")));
 
-function findReport(id) {
-  return reports.find((r) => r.id === id);
+app.use("/api/auth", authRouter);
+app.use("/api/admin", adminRouter);
+
+function settingsUnavailable(res, err) {
+  res.status(503).json({ error: `Settings database unavailable: ${err.message}` });
 }
 
-function chatEnabledFor(report) {
-  return Boolean(getProvider() && report?.datasetId && schemas[report.schemaKey]);
+function chatEnabledFor(report, settings) {
+  return Boolean(getProvider({
+    provider: settings.llmProvider,
+    apiKey: settings.llmApiKey,
+  }) && report?.datasetId && report?.schemaDescription);
 }
+
+// Branding — used by the public portal to render name/logo/accent color.
+app.get("/api/branding", async (req, res) => {
+  try {
+    const settings = await getSettings();
+    res.json({
+      portalName: settings.portalName,
+      logoDataUri: settings.logoDataUri,
+      accentColor: settings.accentColor,
+    });
+  } catch (err) {
+    settingsUnavailable(res, err);
+  }
+});
 
 // List reports available to embed, and whether each has chat/chart enabled.
-app.get("/api/reports", (_req, res) => {
-  res.json(
-    reports.map((r) => ({
-      id: r.id,
-      name: r.name,
-      hasChat: chatEnabledFor(r),
-    }))
-  );
+app.get("/api/reports", async (req, res) => {
+  try {
+    const [settings, reports] = await Promise.all([getSettings(), getReports()]);
+    res.json(
+      reports.map((r) => ({
+        id: r.id,
+        name: r.name,
+        hasChat: chatEnabledFor(r, settings),
+      }))
+    );
+  } catch (err) {
+    settingsUnavailable(res, err);
+  }
 });
 
 // Mint a short-lived embed token for a given report.
 app.get("/api/embed-token/:id", async (req, res) => {
-  const report = findReport(req.params.id);
+  let settings, report;
+  try {
+    settings = await getSettings();
+    report = await getReport(req.params.id);
+  } catch (err) {
+    return settingsUnavailable(res, err);
+  }
   if (!report) {
     return res.status(404).json({ error: `Unknown report "${req.params.id}"` });
   }
 
   try {
-    const token = await generateEmbedToken({
-      workspaceId: report.workspaceId,
-      reportId: report.reportId,
-    });
+    const token = await generateEmbedToken(
+      { tenantId: settings.pbiTenantId, clientId: settings.pbiClientId, clientSecret: settings.pbiClientSecret },
+      { workspaceId: report.workspaceId, reportId: report.reportId }
+    );
     res.json(token);
   } catch (err) {
     res.status(502).json({ error: err.message });
@@ -59,11 +105,19 @@ function stripCodeFence(text) {
 // Question -> DAX -> query -> text answer + optional chart spec.
 app.post("/api/chat", async (req, res) => {
   const { reportId, question } = req.body || {};
-  const report = findReport(reportId);
+
+  let settings, report;
+  try {
+    settings = await getSettings();
+    report = await getReport(reportId);
+  } catch (err) {
+    return settingsUnavailable(res, err);
+  }
+
   if (!report) {
     return res.status(404).json({ error: `Unknown report "${reportId}"` });
   }
-  if (!chatEnabledFor(report)) {
+  if (!chatEnabledFor(report, settings)) {
     return res.status(400).json({ error: `Chat is not enabled for report "${reportId}"` });
   }
   if (!question || typeof question !== "string") {
@@ -75,8 +129,13 @@ app.post("/api/chat", async (req, res) => {
     return res.json({ ...cached, cached: true });
   }
 
-  const provider = getProvider();
-  const schemaDescription = schemas[report.schemaKey];
+  const provider = getProvider({ provider: settings.llmProvider, apiKey: settings.llmApiKey, model: settings.llmModel, apiBase: settings.llmApiBase });
+  const pbiCredentials = {
+    tenantId: settings.pbiTenantId,
+    clientId: settings.pbiClientId,
+    clientSecret: settings.pbiClientSecret,
+  };
+  const schemaDescription = report.schemaDescription;
   let dax;
 
   try {
@@ -99,7 +158,7 @@ app.post("/api/chat", async (req, res) => {
 
   let rows;
   try {
-    rows = await executeQuery({
+    rows = await executeQuery(pbiCredentials, {
       workspaceId: report.workspaceId,
       datasetId: report.datasetId,
       dax,
@@ -157,10 +216,17 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: err.message || "Internal server error" });
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`pbi-embed-portal listening on http://localhost:${port}`);
-  if (!getProvider()) {
-    console.log("LLM_API_KEY not set — running as embed-only portal (chat panel disabled).");
-  }
-});
+if (require.main === module) {
+  const port = process.env.PORT || 3000;
+  migrate()
+    .catch((err) => {
+      console.error("Database migration failed at startup (will retry lazily on first request):", err.message);
+    })
+    .finally(() => {
+      app.listen(port, () => {
+        console.log(`pbi-embed-portal listening on http://localhost:${port}`);
+      });
+    });
+}
+
+module.exports = app;

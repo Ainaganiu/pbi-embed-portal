@@ -1,12 +1,12 @@
-# Power BI Embedded Portal (MVP)
+# Power BI Embedded Portal
 
-A simple web app that embeds Power BI reports for external users via
-app-owns-data (service principal) auth — no Power BI license needed to view —
-plus an optional AI chat panel that answers questions about the data and
-draws a quick chart alongside the answer.
-
-The embed itself has no dependency on the chat feature: if you don't
-configure an LLM, the portal just embeds reports, full stop.
+A web app that embeds Power BI reports for external users via app-owns-data
+(service principal) auth — no Power BI license needed to view — plus an
+optional AI chat panel that answers questions about the data and draws a
+quick chart alongside the answer. Everything (Power BI credentials, the LLM
+provider, the report registry, and portal branding) is configured at runtime
+through an admin dashboard — no code edits or redeploys needed to change
+config.
 
 ## Architecture
 
@@ -22,18 +22,31 @@ directly after that — no further server involvement until the token expires.
 If chat is enabled, a question flows: browser -> server -> LLM (generates
 DAX) -> Power BI `executeQueries` -> LLM again (turns rows into a plain-English
 answer + optional chart spec) -> browser renders the answer and, if present, a
-Chart.js chart.
+Chart.js chart. Identical repeat questions are served from an in-memory cache
+instead of re-querying the LLM/Power BI.
+
+All configuration — Power BI credentials, the report registry (including each
+report's data-model description used to generate DAX), the LLM provider/key,
+and portal branding — lives in Postgres and is edited through `/admin`, gated
+behind a single admin login. Secrets (the Power BI client secret and the LLM
+API key) are encrypted at rest.
 
 ## Project structure
 
 ```
-server.js              # Express app: static assets, /api/reports, /api/embed-token/:id, /api/chat
-lib/powerbi.js          # AAD token cache, GenerateToken, executeQueries
-lib/llm/                # Pluggable LLM adapters (anthropic, openai, deepseek, gemini)
-config/reports.js       # Registry of embeddable reports (edit this)
-config/schema.js        # Semantic model description per report, used by the LLM
-public/                 # index.html + app.js (powerbi-client, Chart.js, chat UI) + style.css
-render.yaml             # Render Blueprint
+server.js               # Express app: public routes, session wiring, router mounting
+lib/db.js                # Postgres pool + schema migration
+lib/settings.js           # Settings/reports data layer (cached, encrypts secrets)
+lib/auth.js                # Password hashing + admin lookup + requireAdmin middleware
+lib/crypto.js               # AES-256-GCM encrypt/decrypt for secrets
+lib/powerbi.js               # AAD token cache, GenerateToken, executeQueries
+lib/llm/                      # Pluggable LLM adapters (anthropic, openai, deepseek, gemini)
+lib/llmCache.js                # Exact-match cache for /api/chat responses
+routes/auth.js                  # /api/auth: status, setup (bootstrap), login, logout
+routes/admin.js                  # /api/admin: settings, test-powerbi, reports CRUD
+public/                            # index.html/app.js (portal), login.html/js, admin.html/js
+scripts/seed.js                     # One-time DB seed (run manually if needed)
+render.yaml                          # Render Blueprint (web service + Postgres)
 ```
 
 ## Setup
@@ -46,6 +59,7 @@ render.yaml             # Render Blueprint
 - "Allow service principals to use Power BI APIs" enabled in the Power BI
   admin portal.
 - The service principal added as a member of the workspace(s).
+- A Postgres database (Render Postgres, or any Postgres instance).
 
 ### 2. Configure
 
@@ -53,96 +67,80 @@ render.yaml             # Render Blueprint
 cp .env.example .env
 ```
 
-Fill in your tenant ID, client ID/secret, and each report's workspace ID,
-report ID, and dataset ID (dataset ID is only needed for the chat panel). Then
-list each report in `config/reports.js` — see the worked `sample-report` entry
-and the commented example below it.
+Fill in `DATABASE_URL`, `SESSION_SECRET`, and `SETTINGS_ENCRYPTION_KEY` (any
+long random strings for the latter two — `openssl rand -hex 32` works well).
+That's it for env vars — everything else is configured through the admin UI.
 
-### 3. (Optional) Enable the AI chat + chart panel
-
-Leave `LLM_API_KEY` blank in `.env` to run as an embed-only portal. To enable
-chat for a report:
-
-1. Set `LLM_PROVIDER` (`anthropic` | `openai` | `deepseek` | `gemini`) and
-   `LLM_API_KEY` in `.env`. `LLM_MODEL` / `LLM_API_BASE` are optional overrides
-   — each provider ships a sensible default:
-
-   | Provider | Default base URL | Default model |
-   |---|---|---|
-   | `anthropic` | `https://api.anthropic.com/v1` | `claude-sonnet-5` |
-   | `openai` | `https://api.openai.com/v1` | `gpt-4o` |
-   | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` |
-   | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-2.5-flash` |
-
-2. Add the report's dataset ID to `.env` (`PBI_DATASET_ID_*`) — chat answers
-   query the dataset directly, not just the embedded report.
-3. Describe the dataset's tables, columns, and measures in `config/schema.js`
-   under the matching `schemaKey`. **This is the highest-leverage file for
-   chat quality** — it's sent to the LLM on every request, and directly drives
-   how often the generated DAX (and the resulting chart) is correct.
-
-A report only shows the chat panel once all three are true: an LLM key is set,
-the report has a `datasetId`, and its `schemaKey` has a non-empty entry in
-`config/schema.js`.
-
-### 4. Run locally
+### 3. Run locally
 
 ```bash
 npm install
 npm start
 ```
 
-Visit `http://localhost:3000`.
+Visit `http://localhost:3000/login.html`. Since no admin account exists yet,
+you'll be prompted to create one. After that, `/admin.html` lets you configure:
 
-### 5. Deploy to Render
+- **Branding** — portal name, logo, accent color (shown to every visitor,
+  no login required).
+- **Power BI** — tenant/client ID + client secret, with a "Test connection"
+  button.
+- **AI Chat** — provider (`anthropic` | `openai` | `deepseek` | `gemini`),
+  API key, and optional model/base-URL overrides. Leave the API key blank to
+  run as an embed-only portal.
+- **Reports** — add/edit/delete reports: name, workspace ID, report ID,
+  dataset ID, and a **data description for the AI** — the tables, columns,
+  and measures the LLM uses to write accurate DAX for that report. A report
+  only shows the chat panel once it has a dataset ID, a data description, and
+  an LLM API key is set.
 
-This repo includes a `render.yaml` Blueprint.
+A `sample-report` placeholder is seeded automatically on first migration —
+edit its IDs via `/admin` rather than starting from scratch.
+
+### 4. Deploy to Render
+
+This repo includes a `render.yaml` Blueprint (web service + Postgres).
 
 1. Push the project to a GitHub repo.
-2. In Render: **New → Blueprint** → connect the repo. Render reads
-   `render.yaml` and creates the web service.
-3. Fill in every variable marked `sync: false` (all the secrets) in the
-   Render dashboard — they are intentionally left out of the Blueprint so
-   nothing sensitive lives in the repo.
-4. Deploy — Render gives you a public URL.
+2. In Render: **New → Blueprint** → connect the repo. Render provisions both
+   the Postgres database and the web service, wiring `DATABASE_URL` and
+   generating `SESSION_SECRET`/`SETTINGS_ENCRYPTION_KEY` automatically.
+3. Deploy — Render gives you a public URL. Visit `/login.html` to create the
+   admin account, then configure everything else via `/admin.html`.
 
-Note: the `free` plan spins down after inactivity, so the first request after
-idle time will be slow while the instance wakes up. Bump `plan` in
-`render.yaml` if that's not acceptable.
+Notes:
+- The `free` Postgres plan expires after 30 days — plan to upgrade or export
+  data before then if you're using it beyond evaluation.
+- The `free` web service plan spins down after inactivity, so the first
+  request after idle time will be slow while the instance wakes up.
 
-## Known limitations (MVP scope)
+## Known limitations
 
-- **No login on the portal** — anyone with the URL can view every listed
-  report.
 - **No row-level security** — the embed token grants full report access.
   Add `identities` with roles to `GenerateToken` and matching RLS roles in
   the model to scope data per user.
 - **No per-user report visibility** — every visitor sees every report in
-  the list; there's no concept of "this client only sees these two
-  reports."
-- **Tokens expire** — the MVP doesn't auto-refresh the embed token, so a
-  long-open tab will eventually need a page reload.
+  the list; there's no concept of "this client only sees these two reports."
+- **Single admin, no SSO** — one username/password account, session stored
+  in-memory (a server restart logs the admin out, but doesn't affect the
+  public portal).
+- **Tokens expire** — the embed token isn't auto-refreshed, so a long-open
+  tab will eventually need a page reload.
 - **(If chat is enabled) No DAX validation** — generated queries run
   directly against the dataset without being checked against the schema
   first. The generated DAX is returned alongside the answer so you can spot
   check it.
-- **(If chat is enabled) Chart type is chosen by the LLM, not the user** —
-  it picks bar vs. line based on the question and data shape; there's no
-  manual chart-type override yet.
+- **(If chat is enabled) Chart type is chosen by the LLM, not the user.**
 - **(If chat is enabled) No conversation memory** — each question is
-  handled independently; follow-ups like *"and last quarter?"* won't have
-  context, and won't remember the previous chart.
+  handled independently.
 
 ## Roadmap (post-MVP)
 
-- [ ] Add authentication (e.g. simple email/password or SSO)
-- [ ] Per-user/per-client report visibility
+- [ ] Multi-tenant / per-client admin accounts and report visibility
 - [ ] RLS-aware embed tokens per client
 - [ ] Auto-refresh embed tokens before they expire
-- [ ] Custom theming / branding per client
 - [ ] Usage analytics (which reports get viewed, by whom)
 - [ ] Validate generated DAX against the schema before execution
-- [ ] Add prompt caching for the schema payload (chat mode)
 - [ ] Let users pick/override the chart type (bar, line, pie, table)
 - [ ] Add short-term conversation memory to the chat
 - [ ] Support additional chart types beyond bar/line (e.g. stacked, %)

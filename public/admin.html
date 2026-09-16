@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Settings</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header id="admin-header">
+    <h1>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="currentColor" stroke-width="1.3"/>
+      </svg>
+      <span>Admin Settings</span>
+    </h1>
+    <a href="/" class="back-link">&larr; View portal</a>
+    <button id="logout-btn" class="btn-secondary" style="margin-left:auto;">Log out</button>
+  </header>
+
+  <main id="admin-main">
+    <!-- Branding -->
+    <section class="admin-section">
+      <h2>Branding</h2>
+      <p class="section-desc">Shown to every visitor of the portal — no login required to see it.</p>
+
+      <div class="logo-preview-row">
+        <div class="logo-preview" id="logo-preview">
+          <span style="color:var(--text-faint);font-size:0.7rem;">No logo</span>
+        </div>
+        <div>
+          <input type="file" id="logo-input" accept="image/png,image/jpeg,image/svg+xml,image/webp" />
+          <div class="hint">PNG/JPEG/SVG/WebP, resized automatically, max ~200KB.</div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="portal-name">Portal name</label>
+          <input id="portal-name" type="text" placeholder="Reports Portal" />
+        </div>
+        <div class="field">
+          <label for="accent-color">Accent color</label>
+          <input id="accent-color" type="color" value="#3b5bfd" />
+        </div>
+      </div>
+
+      <div class="section-footer">
+        <button class="btn-primary" id="save-branding" style="width:auto;">Save branding</button>
+        <span id="branding-status" class="hint"></span>
+      </div>
+    </section>
+
+    <!-- Power BI -->
+    <section class="admin-section">
+      <h2>Power BI</h2>
+      <p class="section-desc">Service principal used to embed reports and query datasets (app-owns-data).</p>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="pbi-tenant-id">Tenant ID</label>
+          <input id="pbi-tenant-id" type="text" />
+        </div>
+        <div class="field">
+          <label for="pbi-client-id">Client ID</label>
+          <input id="pbi-client-id" type="text" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="pbi-client-secret">Client secret</label>
+        <input id="pbi-client-secret" type="password" placeholder="Leave blank to keep the saved value" />
+        <div class="secret-status" id="pbi-secret-status"></div>
+      </div>
+
+      <div class="section-footer">
+        <button class="btn-primary" id="save-powerbi" style="width:auto;">Save Power BI settings</button>
+        <button class="btn-secondary" id="test-powerbi">Test connection</button>
+      </div>
+      <div id="test-powerbi-result"></div>
+    </section>
+
+    <!-- AI Chat -->
+    <section class="admin-section">
+      <h2>AI Chat</h2>
+      <p class="section-desc">Powers the optional chat + chart panel. Leave the API key blank to disable chat entirely.</p>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="llm-provider">Provider</label>
+          <select id="llm-provider">
+            <option value="anthropic">Anthropic</option>
+            <option value="openai">OpenAI</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="gemini">Gemini</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="llm-model">Model (optional override)</label>
+          <input id="llm-model" type="text" placeholder="Provider default" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="llm-api-base">API base URL (optional override)</label>
+        <input id="llm-api-base" type="text" placeholder="Provider default" />
+      </div>
+      <div class="field">
+        <label for="llm-api-key">API key</label>
+        <input id="llm-api-key" type="password" placeholder="Leave blank to keep the saved value" />
+        <div class="secret-status" id="llm-secret-status"></div>
+      </div>
+
+      <div class="section-footer">
+        <button class="btn-primary" id="save-llm" style="width:auto;">Save AI chat settings</button>
+        <span id="llm-status" class="hint"></span>
+      </div>
+    </section>
+
+    <!-- Reports -->
+    <section class="admin-section">
+      <h2>Reports</h2>
+      <p class="section-desc">Every report listed here appears in the portal's picker.</p>
+
+      <table class="reports-table" id="reports-table">
+        <thead>
+          <tr><th>Report</th><th>Workspace / Report ID</th><th>Chat</th><th></th></tr>
+        </thead>
+        <tbody id="reports-tbody"></tbody>
+      </table>
+
+      <div class="section-footer">
+        <button class="btn-secondary" id="add-report-btn">+ Add report</button>
+      </div>
+
+      <div id="report-editor" hidden>
+        <h3 id="report-editor-title">Add report</h3>
+        <input type="hidden" id="report-editing-id" />
+        <div class="field-row">
+          <div class="field">
+            <label for="report-id">Report key (id)</label>
+            <input id="report-id" type="text" placeholder="e.g. sales-overview" />
+          </div>
+          <div class="field">
+            <label for="report-name">Display name</label>
+            <input id="report-name" type="text" placeholder="e.g. Sales Overview" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="report-workspace-id">Workspace ID</label>
+            <input id="report-workspace-id" type="text" />
+          </div>
+          <div class="field">
+            <label for="report-report-id">Report ID</label>
+            <input id="report-report-id" type="text" />
+          </div>
+        </div>
+        <div class="field">
+          <label for="report-dataset-id">Dataset ID (optional — needed for chat)</label>
+          <input id="report-dataset-id" type="text" />
+        </div>
+        <div class="field">
+          <label for="report-schema">Data description for AI (optional — needed for chat)</label>
+          <textarea id="report-schema" rows="6" placeholder="Describe this dashboard's tables, columns, and measures so the AI can write accurate DAX for it."></textarea>
+        </div>
+        <div class="report-editor-actions">
+          <button class="btn-primary" id="save-report" style="width:auto;">Save report</button>
+          <button class="btn-secondary" id="cancel-report-edit">Cancel</button>
+          <span id="report-editor-error" class="form-message error" hidden></span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/admin.js"></script>
+</body>
+</html>
