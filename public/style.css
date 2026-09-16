@@ -1136,3 +1136,53 @@ button {
   color: var(--accent);
   margin-bottom: 0.3rem;
 }
+
+/* authored DAX — code the user will paste into Power BI */
+
+.authored-dax {
+  margin-top: 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.authored-dax-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.3rem 0.5rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.authored-dax pre {
+  margin: 0;
+  padding: 0.55rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-wrap;
+  background: var(--surface);
+}
+
+.dax-validation {
+  padding: 0.4rem 0.55rem;
+  font-size: 0.72rem;
+  border-top: 1px solid var(--border);
+}
+
+.dax-validation.ok {
+  color: #2f7d4f;
+  background: #f1f9f4;
+}
+
+.dax-validation.fail {
+  color: var(--danger);
+  background: var(--danger-soft);
+}

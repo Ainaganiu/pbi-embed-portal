@@ -53,6 +53,15 @@
   const OPEN_ENDED = /\b(summar|overview|walk me through|what am i looking at|explain|interpret|insight|stand out|standing out|notable|going on|tell me about)/i;
   const SPECIFIC_QUESTION = /\b(how many|how much|total|count|sum|average|top \d+|bottom \d+|compare|by (year|month|quarter|region|category|channel|publisher|genre))\b/i;
 
+  // Building or fixing something in Power BI, rather than asking about the
+  // data. Checked first: 'how do I write a measure for total sales by game'
+  // names a visual and mentions a measure, but it's a authoring request.
+  const AUTHORING = /\b(how (do|would) i|how to)\b.*\b(write|create|build|add|make|calculate|fix|debug)\b|\b(dax|measure|calculated column|calculated table|star schema|relationship|power query|m code|time intelligence)\b|\b(why (is|does|isn.t)|what.s wrong with)\b.*\b(measure|dax|formula|calculation)\b/i;
+
+  function isAuthoringQuestion(q) {
+    return AUTHORING.test(q);
+  }
+
   function isVisualQuestion(q) {
     if (SCREEN_REFERENCE.test(q)) return true;
     // Naming a chart that's on the page is a stronger signal than any keyword:
@@ -509,6 +518,44 @@
 
     // For visual-context answers, show what was actually read so the user can
     // see the answer refers to the view they're looking at.
+    // Authoring answers carry code the user will paste into Power BI, plus
+    // the result of actually running it against their model.
+    if (result.authoring && result.dax) {
+      const block = document.createElement("div");
+      block.className = "authored-dax";
+      block.innerHTML = `
+        <div class="authored-dax-head">
+          <span>DAX</span>
+          <button type="button" class="dax-copy" title="Copy">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="9" y="9" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" stroke="currentColor" stroke-width="1.6"/>
+            </svg>
+          </button>
+        </div>
+        <pre>${escapeHtml(result.dax)}</pre>`;
+
+      block.querySelector(".dax-copy").addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(result.dax);
+          const b = block.querySelector(".dax-copy");
+          const original = b.innerHTML;
+          b.innerHTML = "✓";
+          setTimeout(() => { b.innerHTML = original; }, 1200);
+        } catch { /* clipboard unavailable */ }
+      });
+
+      if (result.validation) {
+        const v = document.createElement("div");
+        v.className = `dax-validation ${result.validation.ok ? "ok" : "fail"}`;
+        v.textContent = result.validation.ok
+          ? `Runs against your model${result.validation.sample ? ` — returns ${result.validation.sample}` : ""}`
+          : `Didn't run: ${result.validation.error}`;
+        block.appendChild(v);
+      }
+      bubble.appendChild(block);
+    }
+
     if (result.visualContext) {
       const vc = result.visualContext;
       const parts = [];
@@ -684,12 +731,25 @@
   }
 
   async function runAnswer(row, question) {
-    const visual = isVisualQuestion(question);
-    setThinking(row, visual ? "Reading the current view…" : null);
+    // Authoring is checked first: "how do I write a measure for total sales by
+    // game" names a visual and sounds like a data question, but the user wants
+    // to build something, not be told a number.
+    const authoring = isAuthoringQuestion(question);
+    const visual = !authoring && isVisualQuestion(question);
+    setThinking(
+      row,
+      authoring ? "Working it out…" : visual ? "Reading the current view…" : null
+    );
 
     try {
       let result;
-      if (visual) {
+      if (authoring) {
+        result = await fetchJson("/api/chat/authoring", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reportId: currentReportId, question, history: historyForModel() }),
+        });
+      } else if (visual) {
         const focus = matchVisual(question);
         let state;
         try {

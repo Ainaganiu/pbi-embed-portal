@@ -11,6 +11,9 @@ const { getProvider } = require("./lib/llm");
 const llmCache = require("./lib/llmCache");
 const authRouter = require("./routes/auth");
 const adminRouter = require("./routes/admin");
+const authoringRouter = require("./routes/authoring");
+const { CORE_RULES } = require("./lib/daxSkills");
+const { problemContext, sanitizeHistory, stripCodeFence } = require("./lib/chatHelpers");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -30,6 +33,7 @@ app.use(express.static(path.join(__dirname, "public")));
 
 app.use("/api/auth", authRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/chat/authoring", authoringRouter);
 
 function settingsUnavailable(res, err) {
   res.status(503).json({ error: `Settings database unavailable: ${err.message}` });
@@ -99,33 +103,8 @@ app.get("/api/embed-token/:id", async (req, res) => {
 const MAX_RESULT_ROWS = 50;
 const MAX_RESULT_CHARS = 20_000;
 
-// Business context the admin wrote for a report. It's cached in memory with
-// the rest of the report config, and prepended to every prompt so answers stay
-// anchored to what the dashboard is actually for.
-function problemContext(report) {
-  if (!report.problemStatement) return "";
-  return `Business context for this dashboard — keep this in mind throughout:
-${report.problemStatement}
-
-`;
-}
-
-// Prior turns arrive from the browser, so treat them as untrusted input:
-// keep only the expected shape, cap the length, and cap each message.
-const MAX_HISTORY_MESSAGES = 8;
-const MAX_HISTORY_CHARS = 1500;
-
-function sanitizeHistory(history) {
-  if (!Array.isArray(history)) return [];
-  return history
-    .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-    .slice(-MAX_HISTORY_MESSAGES)
-    .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_HISTORY_CHARS) }));
-}
-
-function stripCodeFence(text) {
-  return text.replace(/^```[a-zA-Z]*\n?/, "").replace(/```\s*$/, "").trim();
-}
+// problemContext, sanitizeHistory and stripCodeFence now live in
+// lib/chatHelpers.js, shared with the authoring route.
 
 // ---------------------------------------------------------------------------
 // Visual-context path: answering "what is this telling me?" about whatever the
