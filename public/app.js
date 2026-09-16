@@ -215,7 +215,11 @@
       reportPicker.appendChild(opt);
     }
     if (reports.length > 0) {
-      await selectReport(reports[0].id);
+      // Reopen whatever the user was last looking at rather than resetting
+      // them to the first report on every refresh.
+      const remembered = localStorage.getItem("selectedReportId");
+      const initial = reports.some((r) => r.id === remembered) ? remembered : reports[0].id;
+      await selectReport(initial);
     } else {
       setReportState(`<p>No reports configured yet — add one in config/reports.js.</p>`);
     }
@@ -224,12 +228,18 @@
   async function selectReport(id) {
     currentReportId = id;
     reportPicker.value = id;
+    try { localStorage.setItem("selectedReportId", id); } catch { /* storage unavailable */ }
 
     const report = reports.find((r) => r.id === id);
     const hasChat = Boolean(report?.hasChat);
     chatToggle.hidden = !hasChat;
     closeChat();
     resetChatLog();
+    loadHistory(id);
+    if (history.length) {
+      hideEmptyState();
+      replayHistory();
+    }
 
     if (!powerbiService) {
       setReportState(`<p>powerbi-client failed to load.</p>`);
@@ -292,6 +302,7 @@
     else closeChat();
   });
   chatClose.addEventListener("click", closeChat);
+  document.getElementById("chat-clear").addEventListener("click", clearHistory);
 
   const savedWidth = localStorage.getItem("chatPanelWidth");
   if (savedWidth) chatPanel.style.width = `${savedWidth}px`;
@@ -313,6 +324,66 @@
     chatResizeHandle.classList.remove("dragging");
     localStorage.setItem("chatPanelWidth", parseInt(chatPanel.style.width, 10));
   });
+
+  // ---------- chat history ----------
+  //
+  // Kept in localStorage rather than the database: the portal has no viewer
+  // identity, so a server-side transcript would be shared by every visitor.
+  // Per-browser storage keeps one person's conversation to themselves.
+
+  const HISTORY_LIMIT = 15; // exchanges kept per report
+  const HISTORY_SENT_TO_MODEL = 4; // recent exchanges given to the LLM
+
+  let history = []; // [{ q, result }]
+
+  function historyKey(reportId) {
+    return `chatHistory:${reportId}`;
+  }
+
+  function loadHistory(reportId) {
+    try {
+      const raw = localStorage.getItem(historyKey(reportId));
+      history = raw ? JSON.parse(raw) : [];
+    } catch {
+      history = [];
+    }
+  }
+
+  function saveHistory() {
+    if (!currentReportId) return;
+    try {
+      localStorage.setItem(historyKey(currentReportId), JSON.stringify(history.slice(-HISTORY_LIMIT)));
+    } catch {
+      // Quota exceeded or storage disabled — the transcript stays in memory
+      // for this session rather than breaking the chat.
+    }
+  }
+
+  function clearHistory() {
+    history = [];
+    if (currentReportId) {
+      try { localStorage.removeItem(historyKey(currentReportId)); } catch { /* ignore */ }
+    }
+    resetChatLog();
+  }
+
+  // What the model sees: just the question and the prose answer, so follow-ups
+  // like "and what about 2022?" resolve. Charts and DAX are left out — they'd
+  // cost tokens without helping the model interpret the next question.
+  function historyForModel() {
+    return history.slice(-HISTORY_SENT_TO_MODEL).flatMap((h) => [
+      { role: "user", content: h.q },
+      { role: "assistant", content: (h.result && h.result.answer) || "" },
+    ]);
+  }
+
+  function replayHistory() {
+    for (const item of history) {
+      appendUserRow(item.q);
+      const row = appendThinkingRow();
+      renderAnswerRow(row, item.result);
+    }
+  }
 
   // ---------- chat log rendering ----------
 
@@ -490,16 +561,18 @@
         result = await fetchJson("/api/chat/visual", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reportId: currentReportId, question, state }),
+          body: JSON.stringify({ reportId: currentReportId, question, state, history: historyForModel() }),
         });
       } else {
         result = await fetchJson("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reportId: currentReportId, question }),
+          body: JSON.stringify({ reportId: currentReportId, question, history: historyForModel() }),
         });
       }
       renderAnswerRow(row, result);
+      history.push({ q: question, result });
+      saveHistory();
     } catch (err) {
       renderErrorRow(row, err.message, () => runAnswer(row, question));
     }

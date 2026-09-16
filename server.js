@@ -110,6 +110,19 @@ ${report.problemStatement}
 `;
 }
 
+// Prior turns arrive from the browser, so treat them as untrusted input:
+// keep only the expected shape, cap the length, and cap each message.
+const MAX_HISTORY_MESSAGES = 8;
+const MAX_HISTORY_CHARS = 1500;
+
+function sanitizeHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+    .slice(-MAX_HISTORY_MESSAGES)
+    .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_HISTORY_CHARS) }));
+}
+
 function stripCodeFence(text) {
   return text.replace(/^```[a-zA-Z]*\n?/, "").replace(/```\s*$/, "").trim();
 }
@@ -172,6 +185,7 @@ function renderReportState(state) {
 
 app.post("/api/chat/visual", async (req, res) => {
   const { reportId, question, state } = req.body || {};
+  const priorTurns = sanitizeHistory(req.body && req.body.history);
 
   let settings, report;
   try {
@@ -268,6 +282,7 @@ app.post("/api/chat/visual", async (req, res) => {
 // Question -> DAX -> query -> text answer + optional chart spec.
 app.post("/api/chat", async (req, res) => {
   const { reportId, question } = req.body || {};
+  const priorTurns = sanitizeHistory(req.body && req.body.history);
 
   let settings, report;
   try {
@@ -287,7 +302,10 @@ app.post("/api/chat", async (req, res) => {
     return res.status(400).json({ error: "Missing question" });
   }
 
-  const cached = llmCache.get(reportId, question);
+  // Only reuse a cached answer for a standalone question. Once there are
+  // prior turns, the same words can mean something different ("and 2022?"),
+  // so a cache keyed on the question alone would return the wrong answer.
+  const cached = priorTurns.length === 0 ? llmCache.get(reportId, question) : null;
   if (cached) {
     return res.json({ ...cached, cached: true });
   }
@@ -339,7 +357,7 @@ app.post("/api/chat", async (req, res) => {
 
   let dax;
   try {
-    dax = await generateDax([{ role: "user", content: question }]);
+    dax = await generateDax([...priorTurns, { role: "user", content: question }]);
   } catch (err) {
     return res.status(502).json({ error: `LLM DAX generation failed: ${err.message}` });
   }
@@ -359,6 +377,7 @@ app.post("/api/chat", async (req, res) => {
     const firstDax = dax;
     try {
       dax = await generateDax([
+        ...priorTurns,
         { role: "user", content: question },
         { role: "assistant", content: firstDax },
         {
@@ -433,7 +452,13 @@ app.post("/api/chat", async (req, res) => {
       messages: [
         {
           role: "user",
-          content: `Question: ${question}\n\nResult rows (JSON): ${rowsForPrompt}`,
+          // The DAX matters here: with conversation history a question can be
+          // as bare as "and 2023?", and without seeing the query the model
+          // can't tell what period or filter the rows actually represent.
+          content:
+            `Question: ${question}\n\n` +
+            `Query that produced these rows:\n${dax}\n\n` +
+            `Result rows (JSON): ${rowsForPrompt}`,
         },
       ],
       json: true,
@@ -454,7 +479,7 @@ app.post("/api/chat", async (req, res) => {
   }
 
   const result = { answer, chart, dax, rowCount };
-  llmCache.set(reportId, question, result);
+  if (priorTurns.length === 0) llmCache.set(reportId, question, result);
   res.json(result);
 });
 
