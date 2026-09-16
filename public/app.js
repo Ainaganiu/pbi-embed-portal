@@ -423,7 +423,14 @@
     const daxId = `dax-${daxCounter}`;
     const bubble = row.querySelector(".chat-bubble");
     bubble.classList.remove("error");
+    bubble.classList.toggle("clarify", Boolean(result.clarify));
     bubble.innerHTML = renderMarkdown(answer || "(no answer)");
+
+    // A clarifying question is a prompt to the user, not a finding — mark it
+    // as such and put the cursor back in the input so they can just reply.
+    if (result.clarify) {
+      chatInput.focus();
+    }
 
     // For visual-context answers, show what was actually read so the user can
     // see the answer refers to the view they're looking at.

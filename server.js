@@ -360,6 +360,21 @@ app.post("/api/chat", async (req, res) => {
     `- Filter values must match the data exactly. If the schema lists the ` +
     `allowed values for a column, use one of those literally.\n` +
     `- Prefer existing measures over re-aggregating raw columns.\n\n` +
+    `Ask before guessing. If the question doesn't identify which measure, ` +
+    `column, filter or time period it means, and picking wrongly would give ` +
+    `a materially different answer, do NOT write a query. Instead reply with ` +
+    `exactly:\n` +
+    `CLARIFY: <one short question naming the options>\n` +
+    `For example "which measure did you mean — revenue or units?" or "which ` +
+    `year should I use?". Offer the real options where you can, but name them ` +
+    `in plain business language — never expose raw measure or column syntax ` +
+    `like [1_ Total Interactions] or 'Table'[Column] to the user. Ask at most ` +
+    `one question, and keep it to a single sentence.\n` +
+    `Do not ask when a sensible reading is obvious: a question naming one ` +
+    `measure, or one that clearly means the whole dataset, should just be ` +
+    `answered. Earlier turns in the conversation count as context — if they ` +
+    `already establish the measure or period, use it rather than asking ` +
+    `again.\n\n` +
     `Dataset schema:\n${schemaDescription}`;
 
   async function generateDax(messages) {
@@ -379,6 +394,19 @@ app.post("/api/chat", async (req, res) => {
   let dax;
   try {
     dax = await generateDax([...priorTurns, { role: "user", content: question }]);
+
+    // The model can decline to guess when the question doesn't pin down a
+    // measure, filter or period. Return the question it asked instead of
+    // querying — a wrong number presented confidently is worse than a
+    // one-line clarification.
+    const clarify = dax.match(/^\s*CLARIFY:\s*(.+)$/is);
+    if (clarify) {
+      return res.json({
+        answer: clarify[1].trim().replace(/\s+/g, " "),
+        chart: null,
+        clarify: true,
+      });
+    }
   } catch (err) {
     return res.status(502).json({ error: `LLM DAX generation failed: ${err.message}` });
   }

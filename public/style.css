@@ -1118,3 +1118,21 @@ button {
   color: var(--accent);
   background: var(--accent-soft);
 }
+
+/* clarifying question — a prompt back to the user, not a finding */
+
+.chat-row.assistant .chat-bubble.clarify {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+}
+
+.chat-bubble.clarify::before {
+  content: "Needs clarification";
+  display: block;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 0.3rem;
+}
