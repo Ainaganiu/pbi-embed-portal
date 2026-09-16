@@ -4,6 +4,7 @@ const express = require("express");
 const session = require("express-session");
 
 const { migrate } = require("./lib/db");
+const { syncAdminFromEnv } = require("./lib/auth");
 const { getSettings, getReports, getReport } = require("./lib/settings");
 const { generateEmbedToken, executeQuery } = require("./lib/powerbi");
 const { getProvider } = require("./lib/llm");
@@ -219,6 +220,7 @@ app.use((err, _req, res, _next) => {
 if (require.main === module) {
   const port = process.env.PORT || 3000;
   migrate()
+    .then(() => syncAdminFromEnv())
     .catch((err) => {
       console.error("Database migration failed at startup (will retry lazily on first request):", err.message);
     })

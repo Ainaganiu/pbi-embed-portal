@@ -69,7 +69,11 @@ cp .env.example .env
 
 Fill in `DATABASE_URL`, `SESSION_SECRET`, and `SETTINGS_ENCRYPTION_KEY` (any
 long random strings for the latter two — `openssl rand -hex 32` works well).
-That's it for env vars — everything else is configured through the admin UI.
+That's it for required env vars — everything else is configured through the
+admin UI.
+
+Optionally set `ADMIN_USERNAME` + `ADMIN_PASSWORD` to control the admin
+account from env instead of (or in addition to) the UI bootstrap — see below.
 
 ### 3. Run locally
 
@@ -79,7 +83,9 @@ npm start
 ```
 
 Visit `http://localhost:3000/login.html`. Since no admin account exists yet,
-you'll be prompted to create one. After that, `/admin.html` lets you configure:
+you'll be prompted to create one — unless `ADMIN_USERNAME`/`ADMIN_PASSWORD`
+are set in `.env`, in which case that account is created automatically on
+boot and you can just log in. Either way, `/admin.html` lets you configure:
 
 - **Branding** — portal name, logo, accent color (shown to every visitor,
   no login required).
@@ -123,7 +129,8 @@ Notes:
   the list; there's no concept of "this client only sees these two reports."
 - **Single admin, no SSO** — one username/password account, session stored
   in-memory (a server restart logs the admin out, but doesn't affect the
-  public portal).
+  public portal). No change-password UI — set/reset it via `ADMIN_USERNAME`/
+  `ADMIN_PASSWORD` env vars and restart.
 - **Tokens expire** — the embed token isn't auto-refreshed, so a long-open
   tab will eventually need a page reload.
 - **(If chat is enabled) No DAX validation** — generated queries run
