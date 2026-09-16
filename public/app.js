@@ -491,6 +491,19 @@
     return row;
   }
 
+  // A row may or may not already hold its bubble: live answers get one from
+  // setThinking, replayed history rows start empty. Callers shouldn't have to
+  // know which.
+  function ensureBubble(row) {
+    let bubble = row.querySelector(".chat-bubble");
+    if (!bubble) {
+      bubble = document.createElement("div");
+      bubble.className = "chat-bubble";
+      row.appendChild(bubble);
+    }
+    return bubble;
+  }
+
   function appendThinkingRow() {
     hideEmptyState();
     const row = document.createElement("div");
@@ -505,7 +518,8 @@
     const { answer, chart, dax } = result;
     daxCounter += 1;
     const daxId = `dax-${daxCounter}`;
-    const bubble = row.querySelector(".chat-bubble");
+
+    const bubble = ensureBubble(row);
     bubble.classList.remove("error");
     bubble.classList.toggle("clarify", Boolean(result.clarify));
     bubble.innerHTML = renderMarkdown(answer || "(no answer)");
@@ -654,7 +668,7 @@
   }
 
   function renderErrorRow(row, message, onRetry) {
-    const bubble = row.querySelector(".chat-bubble");
+    const bubble = ensureBubble(row);
     bubble.classList.add("error");
     bubble.innerHTML = `<div class="error-text">${escapeHtml(message)}</div>
       <button type="button" class="retry-btn">
@@ -691,7 +705,7 @@
       return data;
     }
 
-    const bubble = row.querySelector(".chat-bubble");
+    const bubble = ensureBubble(row);
     bubble.innerHTML = "";
     const streamEl = document.createElement("div");
     bubble.appendChild(streamEl);
