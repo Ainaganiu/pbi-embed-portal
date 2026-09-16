@@ -137,17 +137,34 @@ app.post("/api/chat", async (req, res) => {
     clientSecret: settings.pbiClientSecret,
   };
   const schemaDescription = report.schemaDescription;
-  let dax;
 
-  try {
-    dax = stripCodeFence(
+  const daxSystemPrompt =
+    `You are a DAX query generator for a Power BI dataset. Given a question, ` +
+    `return ONLY a single valid DAX query (an EVALUATE statement) that ` +
+    `answers it. No prose, no markdown fences, no explanation.\n\n` +
+    `Rules — these prevent the most common failures:\n` +
+    `- ALWAYS wrap table names in single quotes: 'DataTable'[Column], not ` +
+    `DataTable[Column]. This is required even when the name has no spaces.\n` +
+    `- A boolean filter argument to CALCULATE/CALCULATETABLE must be a simple ` +
+    `comparison on ONE column, e.g. 'T'[Col] = "X". An expression such as ` +
+    `YEAR('T'[Date]) = 2023 is INVALID there — wrap it in FILTER instead: ` +
+    `FILTER('T', YEAR('T'[Date]) = 2023).\n` +
+    `- If the model has a date/calendar dimension table, filter time using ` +
+    `its columns (e.g. 'Date'[Year] = 2023) rather than applying YEAR() to a ` +
+    `fact-table date column.\n` +
+    `- Use only tables, columns and measures named in the schema below. Never ` +
+    `invent names, and match their spelling and capitalisation exactly, ` +
+    `including any numeric or underscore prefixes on measures.\n` +
+    `- Filter values must match the data exactly. If the schema lists the ` +
+    `allowed values for a column, use one of those literally.\n` +
+    `- Prefer existing measures over re-aggregating raw columns.\n\n` +
+    `Dataset schema:\n${schemaDescription}`;
+
+  async function generateDax(messages) {
+    return stripCodeFence(
       await provider.complete({
-        system:
-          `You are a DAX query generator for a Power BI dataset. Given a ` +
-          `question, return ONLY a single valid DAX query (an EVALUATE ` +
-          `statement) that answers it. No prose, no markdown fences, no ` +
-          `explanation.\n\nDataset schema:\n${schemaDescription}`,
-        messages: [{ role: "user", content: question }],
+        system: daxSystemPrompt,
+        messages,
         // A DAX query itself is short, but reasoning models spend completion
         // tokens on hidden reasoning first — a tight cap truncates them to
         // nothing. This is a ceiling, not a target: non-reasoning models stop
@@ -155,10 +172,19 @@ app.post("/api/chat", async (req, res) => {
         maxTokens: 5000,
       })
     );
+  }
+
+  let dax;
+  try {
+    dax = await generateDax([{ role: "user", content: question }]);
   } catch (err) {
     return res.status(502).json({ error: `LLM DAX generation failed: ${err.message}` });
   }
 
+  // Run the query, and on a Power BI rejection give the model one chance to
+  // correct itself with the error in hand. Most failures are mechanical
+  // (an unquoted table name, an expression used as a CALCULATE filter) and
+  // the model fixes them reliably once it can see what the engine said.
   let rows;
   try {
     rows = await executeQuery(pbiCredentials, {
@@ -166,8 +192,34 @@ app.post("/api/chat", async (req, res) => {
       datasetId: report.datasetId,
       dax,
     });
-  } catch (err) {
-    return res.status(502).json({ error: `Power BI query failed: ${err.message}`, dax });
+  } catch (firstErr) {
+    const firstDax = dax;
+    try {
+      dax = await generateDax([
+        { role: "user", content: question },
+        { role: "assistant", content: firstDax },
+        {
+          role: "user",
+          content:
+            `That query was rejected by Power BI with this error:\n\n` +
+            `${firstErr.message}\n\n` +
+            `Return a corrected DAX query. Check table-name quoting, that ` +
+            `CALCULATE filters are simple column comparisons, and that every ` +
+            `column, measure and filter value exists in the schema exactly as ` +
+            `written. Return ONLY the query.`,
+        },
+      ]);
+      rows = await executeQuery(pbiCredentials, {
+        workspaceId: report.workspaceId,
+        datasetId: report.datasetId,
+        dax,
+      });
+    } catch (retryErr) {
+      return res.status(502).json({
+        error: `Power BI query failed: ${retryErr.message}`,
+        dax,
+      });
+    }
   }
 
   const rowCount = rows.length;
@@ -181,10 +233,28 @@ app.post("/api/chat", async (req, res) => {
   try {
     const raw = await provider.complete({
       system:
-        `You answer questions about Power BI query results. Given the ` +
-        `user's question and the raw result rows (JSON), respond with ONLY ` +
-        `a JSON object of the form:\n` +
-        `{"answer": "<short plain-English answer>", "chart": {"type": "bar"|"line"|"pie"|"card", "labels": [...], "values": [...], "label": "<series or caption label>"} | null}\n` +
+        `You are a data analyst presenting findings to a business audience. ` +
+        `You are given a question and the raw result rows (JSON) from a Power ` +
+        `BI query. Respond with ONLY a JSON object of the form:\n` +
+        `{"answer": "<your analysis, as markdown>", "chart": {"type": "bar"|"line"|"pie"|"card", "labels": [...], "values": [...], "label": "<series or caption label>"} | null}\n\n` +
+        `Write "answer" as a short analyst narrative in three beats:\n` +
+        `1. A headline finding on its own line, wrapped in ** ** — the single ` +
+        `most important thing the numbers say.\n` +
+        `2. One or two sentences of supporting detail: cite the actual ` +
+        `figures, and where the data allows it, add comparison or context ` +
+        `(biggest vs smallest, share of total, change over time, how one ` +
+        `group stacks up against the rest).\n` +
+        `3. A final sentence starting with "What this means:" giving the ` +
+        `practical takeaway.\n\n` +
+        `Style: plain business English, no jargon, no preamble like "Based on ` +
+        `the data". Format numbers readably with thousands separators. Keep ` +
+        `the whole answer under about 90 words.\n\n` +
+        `Be honest about limits. If the rows are empty, say the query ` +
+        `returned no data and suggest what might be wrong (e.g. a filter ` +
+        `value that matches nothing) rather than inventing a finding. If a ` +
+        `trend rests on very few points, or the question can't be fully ` +
+        `answered from these rows, say so plainly instead of overstating it. ` +
+        `Never state a number that is not present in the rows.\n\n` +
         `Pick the chart type that fits the data:\n` +
         `- "card": a single headline number (e.g. a total or a count). Put ` +
         `the number in values as a one-element array and a short caption in ` +
