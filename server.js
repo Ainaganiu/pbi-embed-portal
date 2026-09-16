@@ -184,9 +184,18 @@ app.post("/api/chat", async (req, res) => {
         `You answer questions about Power BI query results. Given the ` +
         `user's question and the raw result rows (JSON), respond with ONLY ` +
         `a JSON object of the form:\n` +
-        `{"answer": "<short plain-English answer>", "chart": {"type": "bar"|"line", "labels": [...], "values": [...], "label": "<series label>"} | null}\n` +
-        `Set "chart" to null if the data doesn't call for a chart (e.g. a ` +
-        `single number or yes/no answer). Do not include markdown fences.`,
+        `{"answer": "<short plain-English answer>", "chart": {"type": "bar"|"line"|"pie"|"card", "labels": [...], "values": [...], "label": "<series or caption label>"} | null}\n` +
+        `Pick the chart type that fits the data:\n` +
+        `- "card": a single headline number (e.g. a total or a count). Put ` +
+        `the number in values as a one-element array and a short caption in ` +
+        `"label"; "labels" may be omitted.\n` +
+        `- "bar": comparing a measure across categories.\n` +
+        `- "line": a trend over time or an ordered sequence.\n` +
+        `- "pie": parts of a whole, only when there are 2-8 categories that ` +
+        `sum to a meaningful total.\n` +
+        `Use null only when the answer is genuinely not numeric (e.g. yes/no ` +
+        `or a plain text explanation). "labels" and "values" must be the ` +
+        `same length for bar, line and pie. Do not include markdown fences.`,
       messages: [
         {
           role: "user",

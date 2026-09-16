@@ -467,9 +467,173 @@ button {
   border-color: var(--accent);
 }
 
-.chat-bubble canvas {
-  margin-top: 0.6rem;
+/* ---------- charts (D3) ---------- */
+
+.chat-row.has-chart {
+  width: 100%;
   max-width: 100%;
+}
+
+.chat-row.has-chart .chat-bubble {
+  width: 100%;
+}
+
+.chat-chart {
+  position: relative;
+  margin: 0.6rem 0 0;
+}
+
+.chat-chart svg {
+  max-width: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.chart-enlarge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-chart:hover .chart-enlarge,
+.chart-enlarge:focus-visible {
+  opacity: 1;
+}
+
+.chart-enlarge:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* axes / gridlines shared by the D3 renderers */
+
+.chat-chart .grid .domain,
+#chart-modal-body .grid .domain {
+  display: none;
+}
+
+.chat-chart .grid line,
+#chart-modal-body .grid line {
+  stroke: var(--border);
+  stroke-dasharray: 2 2;
+}
+
+.chat-chart text,
+#chart-modal-body text {
+  fill: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.chat-chart .domain,
+#chart-modal-body .domain {
+  stroke: var(--border-strong);
+}
+
+.chat-chart .tick line,
+#chart-modal-body .tick line {
+  stroke: var(--border);
+}
+
+/* card (single-value KPI) */
+
+.chart-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  text-align: center;
+}
+
+.chart-card-value {
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.chart-card-caption {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* ---------- enlarge modal ---------- */
+
+#chart-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+#chart-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 22, 30, 0.45);
+}
+
+#chart-modal-panel {
+  position: relative;
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  max-width: 95vw;
+  max-height: 90vh;
+  overflow: auto;
+  animation: modal-in 0.14s ease-out;
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+
+#chart-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1.1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+#chart-modal-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+#chart-modal-close {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 0.3rem;
+  border-radius: 6px;
+  display: flex;
+}
+
+#chart-modal-close:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+#chart-modal-body {
+  padding: 1.25rem;
 }
 
 .error-text {

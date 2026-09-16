@@ -6,7 +6,8 @@
   <title>Power BI Embedded Portal</title>
   <link rel="stylesheet" href="/style.css" />
   <script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <script src="/charts.js"></script>
 </head>
 <body>
   <header id="app-header">
@@ -94,6 +95,21 @@
       </form>
     </aside>
   </main>
+
+  <div id="chart-modal" hidden>
+    <div id="chart-modal-backdrop"></div>
+    <div id="chart-modal-panel" role="dialog" aria-modal="true" aria-labelledby="chart-modal-title">
+      <div id="chart-modal-header">
+        <span id="chart-modal-title">Chart</span>
+        <button id="chart-modal-close" aria-label="Close chart">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div id="chart-modal-body"></div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>

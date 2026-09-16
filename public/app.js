@@ -22,7 +22,6 @@
 
   let reports = [];
   let currentReportId = null;
-  let currentChart = null;
 
   // ---------- tiny helpers ----------
 
@@ -32,12 +31,40 @@
     return div.innerHTML;
   }
 
-  function accentColor() {
-    return (
-      getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() ||
-      "#3b5bfd"
+  // ---------- enlarge modal ----------
+
+  const chartModal = document.getElementById("chart-modal");
+  const chartModalBody = document.getElementById("chart-modal-body");
+  const chartModalTitle = document.getElementById("chart-modal-title");
+  let lastFocused = null;
+
+  function openChartModal(spec) {
+    lastFocused = document.activeElement;
+    chartModalTitle.textContent = spec.label || "Chart";
+    chartModal.hidden = false;
+
+    // Re-render at the larger size rather than scaling the small SVG, so
+    // text and strokes stay crisp.
+    const width = Math.min(1100, Math.round(window.innerWidth * 0.86));
+    const height = Math.min(
+      Math.round(window.innerHeight * 0.68),
+      spec.type === "card" ? 260 : Math.round(width * 0.5)
     );
+    window.PortalCharts.renderChart(chartModalBody, spec, { width, height });
+    document.getElementById("chart-modal-close").focus();
   }
+
+  function closeChartModal() {
+    chartModal.hidden = true;
+    chartModalBody.innerHTML = "";
+    if (lastFocused) lastFocused.focus();
+  }
+
+  document.getElementById("chart-modal-close").addEventListener("click", closeChartModal);
+  document.getElementById("chart-modal-backdrop").addEventListener("click", closeChartModal);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !chartModal.hidden) closeChartModal();
+  });
 
   async function fetchJson(url, options) {
     const res = await fetch(url, options);
@@ -291,36 +318,39 @@
       });
     }
 
-    if (chart && Array.isArray(chart.labels) && Array.isArray(chart.values)) {
-      if (currentChart) {
-        currentChart.destroy();
-        currentChart = null;
-      }
-      const canvas = document.createElement("canvas");
-      bubble.appendChild(canvas);
-      currentChart = new Chart(canvas, {
-        type: chart.type === "line" ? "line" : "bar",
-        data: {
-          labels: chart.labels,
-          datasets: [
-            {
-              label: chart.label || "Value",
-              data: chart.values,
-              // Follow the configured brand accent rather than a fixed colour.
-              backgroundColor: accentColor(),
-              borderColor: accentColor(),
-              tension: 0.3,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          plugins: { legend: { display: false } },
-          scales: {
-            x: { grid: { display: false } },
-            y: { grid: { color: "#eef0f4" } },
-          },
-        },
+    if (chart) {
+      // Assistant bubbles shrink to fit their text, so let the row span the
+      // panel when it holds a chart — otherwise the chart inherits the width
+      // of the sentence above it.
+      row.classList.add("has-chart");
+
+      const figure = document.createElement("figure");
+      figure.className = "chat-chart";
+
+      const enlarge = document.createElement("button");
+      enlarge.type = "button";
+      enlarge.className = "chart-enlarge";
+      enlarge.title = "Enlarge chart";
+      enlarge.setAttribute("aria-label", "Enlarge chart");
+      enlarge.innerHTML = `
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 9V4h5M20 15v5h-5M20 9V4h-5M4 15v5h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>`;
+      enlarge.addEventListener("click", () => openChartModal(chart));
+
+      const canvasHost = document.createElement("div");
+      canvasHost.className = "chart-host";
+
+      figure.appendChild(enlarge);
+      figure.appendChild(canvasHost);
+      bubble.appendChild(figure);
+
+      // Size from the chat log rather than the bubble, which is content-sized.
+      const available = (chatLog.clientWidth || 360) - 56;
+      const width = Math.max(240, available);
+      window.PortalCharts.renderChart(canvasHost, chart, {
+        width,
+        height: chart.type === "card" ? 120 : Math.round(Math.min(width * 0.72, 260)),
       });
     }
 
