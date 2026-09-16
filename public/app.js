@@ -49,12 +49,16 @@
   // goes to the query pipeline. Genuinely ambiguous short asks prefer the
   // visual path: describing the wrong thing is cheaper to recover from than
   // quoting a confidently wrong number.
-  const SCREEN_REFERENCE = /(this|these|current|currently|on screen|on-screen|this page|the page|the dashboard|the report|the view|here)/i;
-  const OPEN_ENDED = /(summar|overview|walk me through|what am i looking at|explain|interpret|insight|stand out|standing out|notable|going on|tell me about)/i;
-  const SPECIFIC_QUESTION = /(how many|how much|total|count|sum|average|top \d+|bottom \d+|compare|by (year|month|quarter|region|category|channel|publisher|genre))/i;
+  const SCREEN_REFERENCE = /\b(this|these|current|currently|on screen|on-screen|this page|the page|the dashboard|the report|the view|here)\b/i;
+  const OPEN_ENDED = /\b(summar|overview|walk me through|what am i looking at|explain|interpret|insight|stand out|standing out|notable|going on|tell me about)/i;
+  const SPECIFIC_QUESTION = /\b(how many|how much|total|count|sum|average|top \d+|bottom \d+|compare|by (year|month|quarter|region|category|channel|publisher|genre))\b/i;
 
   function isVisualQuestion(q) {
     if (SCREEN_REFERENCE.test(q)) return true;
+    // Naming a chart that's on the page is a stronger signal than any keyword:
+    // the user is pointing at something in front of them, so answer from it
+    // rather than re-querying the model and ignoring their slicers.
+    if (matchVisual(q)) return true;
     if (OPEN_ENDED.test(q)) return !SPECIFIC_QUESTION.test(q);
     if (SPECIFIC_QUESTION.test(q)) return false;
     return q.trim().split(/\s+/).length <= 6;
@@ -62,7 +66,60 @@
 
   const DECORATIVE = ["shape", "image", "textbox", "actionButton", "basicShape"];
 
-  async function captureReportState() {
+  // Titles of the visuals on the page the user is currently looking at. Kept
+  // warm so routing can consider them: getVisuals() measures at ~18ms, and the
+  // router has to decide a path before capture would otherwise have run.
+  let currentVisualTitles = [];
+
+  async function refreshVisualTitles() {
+    try {
+      const pages = await embeddedReport.getPages();
+      const page = pages.find((p) => p.isActive) || pages[0];
+      const visuals = await page.getVisuals();
+      currentVisualTitles = visuals
+        .filter((v) => !DECORATIVE.includes(v.type))
+        .map((v) => ({ name: v.name, title: v.title || v.name, type: v.type }));
+    } catch {
+      currentVisualTitles = []; // routing falls back to keywords alone
+    }
+  }
+
+  // Words that carry no identifying weight when matching a question against a
+  // visual's title.
+  const TITLE_STOPWORDS = new Set(["by", "of", "the", "and", "per", "a", "an", "in", "for", "vs"]);
+
+  function titleWords(title) {
+    return String(title)
+      .toLowerCase()
+      .split(/[^a-z0-9%]+/)
+      .filter((w) => w && !TITLE_STOPWORDS.has(w));
+  }
+
+  // Which on-screen visual, if any, the question is about. Used twice: to route
+  // the question to the visual path at all, and to decide which visual to read
+  // in depth. Requires most of the title's distinctive words to be present, so
+  // "total sales by game" matches "Total Sales by Game" while "sales trend
+  // since 2019" does not.
+  function matchVisual(question) {
+    const q = question.toLowerCase();
+    let best = null;
+
+    for (const v of currentVisualTitles) {
+      const words = titleWords(v.title);
+      if (words.length === 0) continue;
+      const hits = words.filter((w) => q.includes(w)).length;
+      const score = hits / words.length;
+      // A single-word title is too weak a signal on its own ("Region" would
+      // match almost any question mentioning regions).
+      if (words.length < 2) continue;
+      if (score >= 0.7 && (!best || score > best.score || words.length > best.words)) {
+        best = { name: v.name, title: v.title, score, words: words.length };
+      }
+    }
+    return best;
+  }
+
+  async function captureReportState(focusName) {
     if (!embeddedReport) throw new Error("The report isn't loaded yet.");
 
     const pages = await embeddedReport.getPages();
@@ -88,19 +145,32 @@
 
     state.visuals = await Promise.all(
       interesting.map(async (v) => {
+        const isFocus = Boolean(focusName) && v.name === focusName;
         const entry = { title: v.title || v.name, type: v.type };
+        if (isFocus) entry.focus = true;
+
+        // A visual can carry its own filter on top of page/report ones, which
+        // changes what its numbers actually mean.
+        const filtersPromise = Promise.resolve(v.getFilters?.()).catch(() => null);
+
         try {
           if (v.type === "slicer") {
             const slicer = await v.getSlicerState();
             const values = (slicer.filters || []).flatMap((f) => f.values || []).join(", ");
             entry.slicerState = values || "(no selection — showing all)";
           } else {
-            const result = await v.exportData(models().ExportDataType.Summarized, 10);
+            // The visual the question is about is the answer, so read it
+            // properly; everything else only needs enough for context.
+            const rows = isFocus ? 50 : 10;
+            const result = await v.exportData(models().ExportDataType.Summarized, rows);
             entry.data = result && result.data ? result.data : null;
           }
         } catch (err) {
           entry.error = err && err.message ? err.message : "not readable";
         }
+
+        const vf = await filtersPromise;
+        if (Array.isArray(vf) && vf.length) entry.visualFilters = vf;
         return entry;
       })
     );
@@ -273,6 +343,11 @@
       });
 
       embeddedReport = embedded;
+      currentVisualTitles = [];
+      embedded.off("rendered");
+      embedded.on("rendered", refreshVisualTitles);
+      embedded.off("pageChanged");
+      embedded.on("pageChanged", refreshVisualTitles);
       embedded.off("error");
       embedded.on("error", () => {
         setReportState(`<p>This report's embed token has expired. Reload the page to keep viewing it — this MVP doesn't auto-refresh tokens.</p>`);
@@ -438,6 +513,9 @@
       const vc = result.visualContext;
       const parts = [];
       if (vc.pageName) parts.push(vc.pageName);
+      // Name the chart that was actually analysed, so a focused answer is
+      // visibly tied to the visual the user asked about.
+      if (vc.focusTitle) parts.push(`focused on "${vc.focusTitle}"`);
       parts.push(`${vc.visualCount} visual${vc.visualCount === 1 ? "" : "s"}`);
       if (vc.filters && vc.filters !== "none") parts.push(`filters: ${vc.filters}`);
       const ctx = document.createElement("div");
@@ -612,9 +690,10 @@
     try {
       let result;
       if (visual) {
+        const focus = matchVisual(question);
         let state;
         try {
-          state = await captureReportState();
+          state = await captureReportState(focus && focus.name);
         } catch (err) {
           // Couldn't read the visuals — fall back to whatever page/filter
           // metadata we do have rather than failing the question outright.

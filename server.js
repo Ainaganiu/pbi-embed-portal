@@ -146,7 +146,10 @@ function stripCodeFence(text) {
 // because the model's reasoning scales with how much data it is handed.
 const MAX_VISUALS_IN_PROMPT = 25;
 const MAX_CHARS_PER_VISUAL = 300;
-const MAX_STATE_CHARS = 6000;
+// When the question is about one specific visual, that visual is the answer,
+// so it gets room for its full row set while the rest stay as brief context.
+const MAX_CHARS_FOCUSED_VISUAL = 1800;
+const MAX_STATE_CHARS = 7500;
 
 function describeFilters(filters) {
   if (!Array.isArray(filters) || filters.length === 0) return "none";
@@ -171,10 +174,15 @@ function renderReportState(state) {
   lines.push(`\nVisuals currently on this page (${(state.visuals || []).length}):`);
 
   visuals.forEach((v, i) => {
-    lines.push(`\n${i + 1}. "${v.title || "(untitled)"}" — ${v.type || "unknown type"}`);
+    const focusTag = v.focus ? "   <-- THE VISUAL THE QUESTION IS ABOUT" : "";
+    lines.push(`\n${i + 1}. "${v.title || "(untitled)"}" — ${v.type || "unknown type"}${focusTag}`);
     if (v.slicerState) lines.push(`   slicer selection: ${v.slicerState}`);
+    if (v.visualFilters) lines.push(`   filters on this visual: ${describeFilters(v.visualFilters)}`);
     if (v.error) lines.push(`   (data unavailable: ${v.error})`);
-    else if (v.data) lines.push(`   data:\n${String(v.data).slice(0, MAX_CHARS_PER_VISUAL)}`);
+    else if (v.data) {
+      const cap = v.focus ? MAX_CHARS_FOCUSED_VISUAL : MAX_CHARS_PER_VISUAL;
+      lines.push(`   data:\n${String(v.data).slice(0, cap)}`);
+    }
   });
 
   if ((state.visuals || []).length > MAX_VISUALS_IN_PROMPT) {
@@ -213,9 +221,11 @@ app.post("/api/chat/visual", async (req, res) => {
 
   const stateText = renderReportState(state || {});
 
+  const focused = (state?.visuals || []).find((v) => v && v.focus);
   const visualContext = {
     pageName: state?.pageName || null,
     visualCount: (state?.visuals || []).length,
+    focusTitle: focused ? focused.title : null,
     // Report- and page-level filters both narrow what's on screen, so the
     // "what was read" line has to account for both.
     filters: describeFilters([
@@ -248,8 +258,13 @@ app.post("/api/chat/visual", async (req, res) => {
         `are actually present in the data below. Never invent a number you ` +
         `cannot see.\n` +
         `- Respect the current filter/slicer state. Frame your answer in ` +
-        `terms of what is actually being shown ("for the filters currently ` +
-        `applied…"), not the dataset as a whole.\n` +
+        `terms of what is actually being shown, naming the active filters in ` +
+        `plain business terms ("with 2016 selected…"). If nothing is ` +
+        `filtered, say the figures cover everything. Never present filtered ` +
+        `numbers as if they were the whole dataset.\n` +
+        `- If a visual is marked as THE VISUAL THE QUESTION IS ABOUT, answer ` +
+        `about that visual. Do not recap the rest of the page; bring in ` +
+        `another visual only where it directly explains the one asked about.\n` +
         `- Match the question's scope. A broad question ("what is this ` +
         `telling me?") gets a short, prioritized summary — 2-4 sentences, ` +
         `most important first. A specific question about one part of the ` +
