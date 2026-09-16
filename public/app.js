@@ -577,6 +577,7 @@
       // Name the chart that was actually analysed, so a focused answer is
       // visibly tied to the visual the user asked about.
       if (vc.focusTitle) parts.push(`focused on "${vc.focusTitle}"`);
+      if (vc.queried) parts.push("model queried for missing data");
       parts.push(`${vc.visualCount} visual${vc.visualCount === 1 ? "" : "s"}`);
       if (vc.filters && vc.filters !== "none") parts.push(`filters: ${vc.filters}`);
       const ctx = document.createElement("div");
@@ -705,9 +706,11 @@
       return data;
     }
 
-    const bubble = ensureBubble(row);
+    // Reassigned if the server escalates mid-stream: setThinking rebuilds the
+    // bubble to show the new stage, so these can't be const.
+    let bubble = ensureBubble(row);
     bubble.innerHTML = "";
-    const streamEl = document.createElement("div");
+    let streamEl = document.createElement("div");
     bubble.appendChild(streamEl);
 
     const reader = res.body.getReader();
@@ -731,6 +734,16 @@
         try { msg = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
         if (msg.error) throw new Error(msg.error);
+        if (msg.stage === "querying") {
+          // The page could not answer it; the model is being queried.
+          streamEl.innerHTML = "";
+          setThinking(row, "Querying the model…");
+          bubble = ensureBubble(row);
+          streamEl = document.createElement("div");
+          bubble.appendChild(streamEl);
+          text = "";
+          continue;
+        }
         if (msg.delta) {
           text += msg.delta;
           streamEl.innerHTML = renderMarkdown(text);

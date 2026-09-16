@@ -143,6 +143,35 @@ function describeFilters(filters) {
     .join("; ");
 }
 
+// The entities the user can actually see. Without these, a follow-up query for
+// "these games in 2015" would return 2015's own top five — a different question
+// that looks like an answer.
+const MAX_ENTITIES = 25;
+
+function entitiesOnScreen(state) {
+  const visuals = state?.visuals || [];
+  // Prefer the visual the question was about; otherwise the first one with a
+  // categorical first column.
+  const candidates = [...visuals].sort((a, b) => (b.focus ? 1 : 0) - (a.focus ? 1 : 0));
+
+  for (const v of candidates) {
+    if (!v.data || v.type === "slicer") continue;
+    const lines = String(v.data).trim().split(/\r?\n/);
+    if (lines.length < 2) continue;
+
+    const values = lines
+      .slice(1)
+      .map((line) => (line.match(/^("([^"]*)"|[^,]*)/) || [])[0] || "")
+      .map((s) => s.replace(/^"|"$/g, "").trim())
+      .filter((s) => s && !/^-?[\d.,]+$/.test(s)); // skip numeric first columns
+
+    if (values.length >= 2) {
+      return { visualTitle: v.title, header: lines[0].split(",")[0].trim(), values: values.slice(0, MAX_ENTITIES) };
+    }
+  }
+  return null;
+}
+
 function renderReportState(state) {
   const lines = [];
   lines.push(`Active page: ${state.pageName || "(unknown)"}`);
@@ -168,6 +197,67 @@ function renderReportState(state) {
     lines.push(`\n(${state.visuals.length - MAX_VISUALS_IN_PROMPT} further visuals omitted.)`);
   }
   return lines.join("\n").slice(0, MAX_STATE_CHARS);
+}
+
+function buildDaxSystemPrompt(report, opts = {}) {
+  const schemaDescription = report.schemaDescription;
+  return (
+    problemContext(report) +
+    `You are a DAX query generator for a Power BI dataset. Given a question, ` +
+    `return ONLY a single valid DAX query (an EVALUATE statement) that ` +
+    `answers it. No prose, no markdown fences, no explanation.\n\n` +
+    `Rules — these prevent the most common failures:\n` +
+    `- ALWAYS wrap table names in single quotes: 'DataTable'[Column], not ` +
+    `DataTable[Column]. This is required even when the name has no spaces.\n` +
+    `- A boolean filter argument to CALCULATE/CALCULATETABLE must be a simple ` +
+    `comparison on ONE column, e.g. 'T'[Col] = "X". An expression such as ` +
+    `YEAR('T'[Date]) = 2023 is INVALID there — wrap it in FILTER instead: ` +
+    `FILTER('T', YEAR('T'[Date]) = 2023).\n` +
+    `- If the model has a date/calendar dimension table, filter time using ` +
+    `its columns (e.g. 'Date'[Year] = 2023) rather than applying YEAR() to a ` +
+    `fact-table date column.\n` +
+    `- Use only tables, columns and measures named in the schema below. Never ` +
+    `invent names, and match their spelling and capitalisation exactly, ` +
+    `including any numeric or underscore prefixes on measures.\n` +
+    `- Filter values must match the data exactly. If the schema lists the ` +
+    `allowed values for a column, use one of those literally.\n` +
+    `- Prefer existing measures over re-aggregating raw columns.\n\n` +
+    // Escalation from the visual path already knows exactly what it needs, so
+    // a clarifying question there would stall a request the user never sees.
+    (opts.allowClarify === false
+      ? `The request below already states precisely what is needed. Always ` +
+        `return a query — never ask a clarifying question.\n\n`
+      : `Ask before guessing. If the question doesn't identify which measure, ` +
+        `column, filter or time period it means, and picking wrongly would give ` +
+        `a materially different answer, do NOT write a query. Instead reply with ` +
+        `exactly:\n` +
+        `CLARIFY: <one short question naming the options>\n` +
+        `For example "which measure did you mean — revenue or units?" or "which ` +
+        `year should I use?". Offer the real options where you can, but name them ` +
+        `in plain business language — never expose raw measure or column syntax ` +
+        `like [1_ Total Interactions] or 'Table'[Column] to the user. Ask at most ` +
+        `one question, and keep it to a single sentence.\n` +
+        `Do not ask when a sensible reading is obvious: a question naming one ` +
+        `measure, or one that clearly means the whole dataset, should just be ` +
+        `answered. Earlier turns in the conversation count as context — if they ` +
+        `already establish the measure or period, use it rather than asking ` +
+        `again.\n\n`) +
+    `Dataset schema:\n${schemaDescription}`
+  );
+}
+
+// Shared by the data path and by escalation from the visual path, so both get
+// the same rules, schema grounding and CORE_RULES.
+async function generateDaxFor(report, provider, messages, opts = {}) {
+  return stripCodeFence(
+    await provider.complete({
+      system: buildDaxSystemPrompt(report, opts),
+      messages,
+      // Reasoning models spend completion tokens thinking before emitting
+      // anything; this is a ceiling, not a target.
+      maxTokens: 5000,
+    })
+  );
 }
 
 app.post("/api/chat/visual", async (req, res) => {
@@ -248,9 +338,17 @@ app.post("/api/chat/visual", async (req, res) => {
         `telling me?") gets a short, prioritized summary — 2-4 sentences, ` +
         `most important first. A specific question about one part of the ` +
         `screen gets a direct, focused answer, not a full-page recap.\n` +
-        `- Say what you can't see. If the question asks about something not ` +
-        `present in the current view (a different page, a filter that isn't ` +
-        `applied), say so plainly rather than guessing.\n` +
+        `- If the question needs figures that are NOT on this page — a prior ` +
+        `period, a different slice, anything the visuals don't show — do not ` +
+        `tell the user to go and build a view. Instead make your ENTIRE reply ` +
+        `a single line, nothing before or after it:\n` +
+        `NEED_DATA: <plainly what you need, naming the entities on screen it ` +
+        `relates to>\n` +
+        `For example: NEED_DATA: 2015 sales for these same five games — Fifa ` +
+        `17, Tom Clancy's Rainbow Six Siege, Uncharted 4, Far Cry Primal, ` +
+        `Overwatch. The underlying model will be queried and you'll be asked ` +
+        `again with the results. Only do this when the page genuinely lacks ` +
+        `the figures — if it has them, just answer.\n` +
         `- No jargon, no hedging filler. Write like you're briefing a ` +
         `colleague who needs the point, not a caveat-laden disclaimer.\n\n` +
         `Keep the full response under 100 words unless the user's question ` +
@@ -279,8 +377,149 @@ app.post("/api/chat/visual", async (req, res) => {
       const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
       try {
-        const answer = await provider.completeStream(request, (delta) => send({ delta }));
-        send({ done: true, answer: answer.trim(), visualContext });
+        // Hold the head of the stream back until we know whether this is an
+        // answer or a request for data. NEED_DATA must be the first line, so a
+        // short buffer is enough to tell — and the user sees nothing either way
+        // until we know, so an escalation never flashes partial text.
+        let head = "";
+        let escalating = false;
+        let forwarding = false;
+
+        const answer = await provider.completeStream(request, (delta) => {
+          if (forwarding) return send({ delta });
+          head += delta;
+          if (/^\s*NEED_DATA:/i.test(head)) {
+            escalating = true;
+            return;
+          }
+          // Once there's enough to rule the marker out, release the buffer.
+          if (escalating) return;
+          if (head.length >= 24 || /\n/.test(head)) {
+            forwarding = true;
+            send({ delta: head });
+          }
+        });
+
+        if (!/^\s*NEED_DATA:/i.test(answer)) {
+          if (!forwarding) send({ delta: answer }); // shorter than the buffer
+          return send({ done: true, answer: answer.trim(), visualContext }), res.end();
+        }
+
+        // --- escalation: the page can't answer it, so query the model -------
+        const needed = answer.replace(/^\s*NEED_DATA:\s*/i, "").trim();
+        send({ stage: "querying" });
+
+        const entities = entitiesOnScreen(state);
+        const filterSummary = describeFilters([
+          ...(state?.reportFilters || []),
+          ...(state?.pageFilters || []),
+        ]);
+
+        const grounding =
+          `The user is looking at a report page and asked a question the page ` +
+          `cannot answer on its own. Write a DAX query for the missing data.\n\n` +
+          `What is needed: ${needed}\n` +
+          `Filters currently applied on their view: ${filterSummary}\n` +
+          (entities
+            ? `The question refers to these specific ${entities.header || "items"} ` +
+              `currently shown in "${entities.visualTitle}" — return rows for ` +
+              `THESE, not a fresh top-N:\n${entities.values.map((v) => `- ${v}`).join("\n")}\n`
+            : "") +
+          `\nCritical:\n` +
+          `- Apply the time period or slice named in "what is needed" as an ` +
+          `actual filter in the query. Naming a column "2015 Sales" while ` +
+          `filtering nothing returns the wrong figures and is worse than ` +
+          `failing outright.\n` +
+          `- The view's current filter is context for identifying the items. ` +
+          `Do not reapply it if the request asks for a different period.\n` +
+          `- Return one row per item listed above so the results line up with ` +
+          `what is on screen.\n\n` +
+          `Return only the DAX query.`;
+
+        let rows = null;
+        let queryError = null;
+        let usedDax = null;
+        try {
+          usedDax = await generateDaxFor(
+            report,
+            provider,
+            [{ role: "user", content: grounding }],
+            { allowClarify: false }
+          );
+          const credentials = {
+            tenantId: settings.pbiTenantId,
+            clientId: settings.pbiClientId,
+            clientSecret: settings.pbiClientSecret,
+          };
+          const target = { workspaceId: report.workspaceId, datasetId: report.datasetId };
+
+          try {
+            rows = await executeQuery(credentials, { ...target, dax: usedDax });
+          } catch (firstErr) {
+            // Same self-correction the data path gets: most failures here are
+            // mechanical (argument order, quoting) and the model fixes them
+            // once it can see what the engine said.
+            console.error("[escalation] first attempt failed:", firstErr.message);
+            usedDax = await generateDaxFor(
+              report,
+              provider,
+              [
+                { role: "user", content: grounding },
+                { role: "assistant", content: usedDax },
+                {
+                  role: "user",
+                  content:
+                    `Power BI rejected that query:\n\n${firstErr.message}\n\n` +
+                    `Return a corrected DAX query, keeping the same filters and ` +
+                    `the same list of items. Return ONLY the query.`,
+                },
+              ],
+              { allowClarify: false }
+            );
+            rows = await executeQuery(credentials, { ...target, dax: usedDax });
+          }
+        } catch (err) {
+          queryError = err.message;
+          // Worth a server-side line: the user only sees "couldn't retrieve
+          // it", which isn't enough to diagnose a recurring failure.
+          console.error("[escalation] query failed:", err.message);
+          if (usedDax) console.error("[escalation] dax was:", usedDax.replace(/\s+/g, " ").slice(0, 300));
+        }
+
+        const composed = await provider.completeStream(
+          {
+            system:
+              problemContext(report) +
+              `You are a data analyst. The user asked a question about the ` +
+              `report page in front of them. The page alone could not answer ` +
+              `it, so the underlying model was queried for the missing part.\n\n` +
+              `Answer their question using both sources, and make clear which ` +
+              `is which — say "on screen" for figures from their current view ` +
+              `and "from the model" (or similar plain wording) for the queried ` +
+              `figures. Lead with the finding. Never state a number that is ` +
+              `not in one of the two sources.\n` +
+              (queryError
+                ? `The query FAILED. Answer from the screen alone and say ` +
+                  `plainly that you could not retrieve the rest — do not ` +
+                  `invent it.\n`
+                : "") +
+              `Keep it under 110 words. Prose only, no JSON, no DAX.\n\n` +
+              `What was missing: ${needed}\n\n` +
+              `Their current view:\n${stateText}\n\n` +
+              (queryError
+                ? `Query error: ${queryError}`
+                : `Rows returned from the model:\n${JSON.stringify(rows || []).slice(0, MAX_RESULT_CHARS)}`),
+            messages: [...priorTurns, { role: "user", content: question }],
+            maxTokens: 5000,
+          },
+          (delta) => send({ delta })
+        );
+
+        send({
+          done: true,
+          answer: composed.trim(),
+          visualContext: { ...visualContext, queried: true },
+        });
       } catch (err) {
         send({ error: `Visual analysis failed: ${err.message}` });
       }
@@ -333,43 +572,7 @@ app.post("/api/chat", async (req, res) => {
   };
   const schemaDescription = report.schemaDescription;
 
-  const daxSystemPrompt =
-    problemContext(report) +
-    `You are a DAX query generator for a Power BI dataset. Given a question, ` +
-    `return ONLY a single valid DAX query (an EVALUATE statement) that ` +
-    `answers it. No prose, no markdown fences, no explanation.\n\n` +
-    `Rules — these prevent the most common failures:\n` +
-    `- ALWAYS wrap table names in single quotes: 'DataTable'[Column], not ` +
-    `DataTable[Column]. This is required even when the name has no spaces.\n` +
-    `- A boolean filter argument to CALCULATE/CALCULATETABLE must be a simple ` +
-    `comparison on ONE column, e.g. 'T'[Col] = "X". An expression such as ` +
-    `YEAR('T'[Date]) = 2023 is INVALID there — wrap it in FILTER instead: ` +
-    `FILTER('T', YEAR('T'[Date]) = 2023).\n` +
-    `- If the model has a date/calendar dimension table, filter time using ` +
-    `its columns (e.g. 'Date'[Year] = 2023) rather than applying YEAR() to a ` +
-    `fact-table date column.\n` +
-    `- Use only tables, columns and measures named in the schema below. Never ` +
-    `invent names, and match their spelling and capitalisation exactly, ` +
-    `including any numeric or underscore prefixes on measures.\n` +
-    `- Filter values must match the data exactly. If the schema lists the ` +
-    `allowed values for a column, use one of those literally.\n` +
-    `- Prefer existing measures over re-aggregating raw columns.\n\n` +
-    `Ask before guessing. If the question doesn't identify which measure, ` +
-    `column, filter or time period it means, and picking wrongly would give ` +
-    `a materially different answer, do NOT write a query. Instead reply with ` +
-    `exactly:\n` +
-    `CLARIFY: <one short question naming the options>\n` +
-    `For example "which measure did you mean — revenue or units?" or "which ` +
-    `year should I use?". Offer the real options where you can, but name them ` +
-    `in plain business language — never expose raw measure or column syntax ` +
-    `like [1_ Total Interactions] or 'Table'[Column] to the user. Ask at most ` +
-    `one question, and keep it to a single sentence.\n` +
-    `Do not ask when a sensible reading is obvious: a question naming one ` +
-    `measure, or one that clearly means the whole dataset, should just be ` +
-    `answered. Earlier turns in the conversation count as context — if they ` +
-    `already establish the measure or period, use it rather than asking ` +
-    `again.\n\n` +
-    `Dataset schema:\n${schemaDescription}`;
+  const daxSystemPrompt = buildDaxSystemPrompt(report);
 
   async function generateDax(messages) {
     return stripCodeFence(
