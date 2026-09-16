@@ -6,6 +6,7 @@ const reports = require("./config/reports");
 const schemas = require("./config/schema");
 const { generateEmbedToken, executeQuery } = require("./lib/powerbi");
 const { getProvider } = require("./lib/llm");
+const llmCache = require("./lib/llmCache");
 
 const app = express();
 app.use(express.json());
@@ -69,6 +70,11 @@ app.post("/api/chat", async (req, res) => {
     return res.status(400).json({ error: "Missing question" });
   }
 
+  const cached = llmCache.get(reportId, question);
+  if (cached) {
+    return res.json({ ...cached, cached: true });
+  }
+
   const provider = getProvider();
   const schemaDescription = schemas[report.schemaKey];
   let dax;
@@ -82,6 +88,9 @@ app.post("/api/chat", async (req, res) => {
           `statement) that answers it. No prose, no markdown fences, no ` +
           `explanation.\n\nDataset schema:\n${schemaDescription}`,
         messages: [{ role: "user", content: question }],
+        // DAX queries are short — cap generation well below the default to
+        // avoid paying for a rambling response.
+        maxTokens: 300,
       })
     );
   } catch (err) {
@@ -123,6 +132,9 @@ app.post("/api/chat", async (req, res) => {
         },
       ],
       json: true,
+      // Enough room for a short answer + a chart with a few dozen points,
+      // without leaving the response length uncapped.
+      maxTokens: 700,
     });
 
     const parsed = JSON.parse(stripCodeFence(raw));
@@ -136,7 +148,9 @@ app.post("/api/chat", async (req, res) => {
       : `LLM answer generation failed: ${err.message}`;
   }
 
-  res.json({ answer, chart, dax, rowCount });
+  const result = { answer, chart, dax, rowCount };
+  llmCache.set(reportId, question, result);
+  res.json(result);
 });
 
 app.use((err, _req, res, _next) => {
