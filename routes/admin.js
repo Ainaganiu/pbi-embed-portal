@@ -8,7 +8,7 @@ const {
   updateReport,
   deleteReport,
 } = require("../lib/settings");
-const { getAadToken, clearTokenCache } = require("../lib/powerbi");
+const { getAadToken, clearTokenCache, listWorkspaces, listReports } = require("../lib/powerbi");
 
 const router = express.Router();
 router.use(requireAdmin);
@@ -54,6 +54,37 @@ router.post("/test-powerbi", async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.get("/powerbi/workspaces", async (req, res) => {
+  const settings = await getSettings();
+  try {
+    const workspaces = await listWorkspaces({
+      tenantId: settings.pbiTenantId,
+      clientId: settings.pbiClientId,
+      clientSecret: settings.pbiClientSecret,
+    });
+    res.json(workspaces);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get("/powerbi/workspaces/:workspaceId/reports", async (req, res) => {
+  const settings = await getSettings();
+  try {
+    const reports = await listReports(
+      {
+        tenantId: settings.pbiTenantId,
+        clientId: settings.pbiClientId,
+        clientSecret: settings.pbiClientSecret,
+      },
+      req.params.workspaceId
+    );
+    res.json(reports);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

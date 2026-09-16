@@ -135,6 +135,25 @@
       <div id="report-editor" hidden>
         <h3 id="report-editor-title">Add report</h3>
         <input type="hidden" id="report-editing-id" />
+
+        <div class="field-row">
+          <div class="field">
+            <label for="browse-workspace">Browse Power BI (optional)</label>
+            <select id="browse-workspace">
+              <option value="">Select a workspace…</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="browse-report">&nbsp;</label>
+            <select id="browse-report" disabled>
+              <option value="">Select a report…</option>
+            </select>
+          </div>
+        </div>
+        <div class="hint" id="browse-status" style="margin:-0.5rem 0 1rem;">
+          Uses the saved Power BI credentials to list workspaces/reports and fill in the IDs below.
+        </div>
+
         <div class="field-row">
           <div class="field">
             <label for="report-id">Report key (id)</label>

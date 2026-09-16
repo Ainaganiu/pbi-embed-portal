@@ -236,6 +236,8 @@
     $("report-dataset-id").value = editing ? report.datasetId || "" : "";
     $("report-schema").value = editing ? report.schemaDescription || "" : "";
     $("report-id").focus();
+    resetBrowsePicker();
+    loadWorkspaces();
   }
 
   function closeEditor() {
@@ -244,6 +246,90 @@
 
   $("add-report-btn").addEventListener("click", () => openEditor(null));
   $("cancel-report-edit").addEventListener("click", closeEditor);
+
+  // ---------- browse Power BI picker ----------
+
+  let workspacesLoaded = false;
+
+  function resetBrowsePicker() {
+    $("browse-workspace").innerHTML = `<option value="">Select a workspace…</option>`;
+    $("browse-report").innerHTML = `<option value="">Select a report…</option>`;
+    $("browse-report").disabled = true;
+    $("browse-status").textContent = "Uses the saved Power BI credentials to list workspaces/reports and fill in the IDs below.";
+    workspacesLoaded = false;
+  }
+
+  async function loadWorkspaces() {
+    if (workspacesLoaded) return;
+    const status = $("browse-status");
+    try {
+      const workspaces = await api("/api/admin/powerbi/workspaces");
+      const select = $("browse-workspace");
+      for (const w of workspaces) {
+        const opt = document.createElement("option");
+        opt.value = w.id;
+        opt.textContent = w.name;
+        select.appendChild(opt);
+      }
+      workspacesLoaded = true;
+      status.textContent = workspaces.length
+        ? "Pick a workspace to browse its reports."
+        : "No workspaces found — is the service principal added as a member of any workspace?";
+    } catch (err) {
+      status.textContent = `Couldn't list workspaces: ${err.message}`;
+    }
+  }
+
+  $("browse-workspace").addEventListener("change", async (e) => {
+    const workspaceId = e.target.value;
+    const reportSelect = $("browse-report");
+    reportSelect.innerHTML = `<option value="">Select a report…</option>`;
+    reportSelect.disabled = true;
+    if (!workspaceId) return;
+
+    const status = $("browse-status");
+    status.textContent = "Loading reports…";
+    try {
+      const reports = await api(`/api/admin/powerbi/workspaces/${encodeURIComponent(workspaceId)}/reports`);
+      for (const r of reports) {
+        const opt = document.createElement("option");
+        opt.value = r.id;
+        opt.textContent = r.name;
+        opt.dataset.datasetId = r.datasetId || "";
+        opt.dataset.name = r.name;
+        reportSelect.appendChild(opt);
+      }
+      reportSelect.disabled = false;
+      status.textContent = reports.length
+        ? "Pick a report to fill in the fields below."
+        : "No reports found in this workspace.";
+    } catch (err) {
+      status.textContent = `Couldn't list reports: ${err.message}`;
+    }
+  });
+
+  $("browse-report").addEventListener("change", (e) => {
+    const opt = e.target.selectedOptions[0];
+    if (!opt || !opt.value) return;
+
+    $("report-workspace-id").value = $("browse-workspace").value;
+    $("report-report-id").value = opt.value;
+    $("report-dataset-id").value = opt.dataset.datasetId || "";
+    if (!$("report-name").value.trim()) {
+      $("report-name").value = opt.dataset.name || "";
+    }
+    if (!$("report-editing-id").value && !$("report-id").value.trim()) {
+      $("report-id").value = slugify(opt.dataset.name || "");
+    }
+  });
+
+  function slugify(str) {
+    return str
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60);
+  }
 
   $("save-report").addEventListener("click", async () => {
     const errorEl = $("report-editor-error");
