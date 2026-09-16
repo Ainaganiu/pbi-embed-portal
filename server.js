@@ -145,7 +145,7 @@ function stripCodeFence(text) {
 // the story, and trimming the payload cuts response time substantially,
 // because the model's reasoning scales with how much data it is handed.
 const MAX_VISUALS_IN_PROMPT = 25;
-const MAX_CHARS_PER_VISUAL = 450;
+const MAX_CHARS_PER_VISUAL = 300;
 const MAX_STATE_CHARS = 6000;
 
 function describeFilters(filters) {
@@ -213,8 +213,19 @@ app.post("/api/chat/visual", async (req, res) => {
 
   const stateText = renderReportState(state || {});
 
+  const visualContext = {
+    pageName: state?.pageName || null,
+    visualCount: (state?.visuals || []).length,
+    // Report- and page-level filters both narrow what's on screen, so the
+    // "what was read" line has to account for both.
+    filters: describeFilters([
+      ...(state?.reportFilters || []),
+      ...(state?.pageFilters || []),
+    ]),
+  };
+
   try {
-    const answer = await provider.complete({
+    const request = {
       system:
         problemContext(report) +
         `You are an experienced data analyst reviewing a Power BI report on ` +
@@ -255,25 +266,35 @@ app.post("/api/chat/visual", async (req, res) => {
         `view above is what the user is asking about):\n` +
         `${(report.schemaDescription || "(not described)").slice(0, 2500)}`,
       messages: [
+        ...priorTurns,
         { role: "user", content: `Current report state:\n${stateText}\n\nQuestion: ${question}` },
       ],
       maxTokens: 5000,
-    });
+    };
 
-    res.json({
-      answer: answer.trim(),
-      chart: null,
-      visualContext: {
-        pageName: state?.pageName || null,
-        visualCount: (state?.visuals || []).length,
-        // Report- and page-level filters both narrow what's on screen, so the
-        // "what was read" line has to account for both.
-        filters: describeFilters([
-          ...(state?.reportFilters || []),
-          ...(state?.pageFilters || []),
-        ]),
-      },
-    });
+    // Stream when the provider supports it. The model dominates the wait, so
+    // emitting text as it's produced is the difference between ten seconds of
+    // blank panel and an answer that starts almost immediately.
+    if (typeof provider.completeStream === "function") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+      try {
+        const answer = await provider.completeStream(request, (delta) => send({ delta }));
+        send({ done: true, answer: answer.trim(), visualContext });
+      } catch (err) {
+        send({ error: `Visual analysis failed: ${err.message}` });
+      }
+      return res.end();
+    }
+
+    const answer = await provider.complete(request);
+    res.json({ answer: answer.trim(), chart: null, visualContext });
   } catch (err) {
     res.status(502).json({ error: `Visual analysis failed: ${err.message}` });
   }

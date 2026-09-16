@@ -543,6 +543,61 @@
       `<span class="typing-dots"><span></span><span></span><span></span></span></div>`;
   }
 
+  // Reads the SSE stream from /api/chat/visual, painting text into the bubble
+  // as it arrives. Falls back to a plain JSON response if the server chose not
+  // to stream (a provider without streaming support).
+  async function streamVisualAnswer(row, payload) {
+    const res = await fetch("/api/chat/visual", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.headers.get("content-type")?.includes("text/event-stream")) {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+      return data;
+    }
+
+    const bubble = row.querySelector(".chat-bubble");
+    bubble.innerHTML = "";
+    const streamEl = document.createElement("div");
+    bubble.appendChild(streamEl);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let text = "";
+    let final = null;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() || "";
+
+      for (const frame of frames) {
+        const line = frame.split("\n").find((l) => l.startsWith("data:"));
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+        if (msg.error) throw new Error(msg.error);
+        if (msg.delta) {
+          text += msg.delta;
+          streamEl.innerHTML = renderMarkdown(text);
+          chatLog.scrollTop = chatLog.scrollHeight;
+        }
+        if (msg.done) final = msg;
+      }
+    }
+
+    if (!final) throw new Error("The response ended unexpectedly.");
+    return { answer: final.answer || text, chart: null, visualContext: final.visualContext };
+  }
+
   async function runAnswer(row, question) {
     const visual = isVisualQuestion(question);
     setThinking(row, visual ? "Reading the current view…" : null);
@@ -558,11 +613,7 @@
           // metadata we do have rather than failing the question outright.
           state = { captureError: err.message, visuals: [] };
         }
-        result = await fetchJson("/api/chat/visual", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reportId: currentReportId, question, state, history: historyForModel() }),
-        });
+        result = await streamVisualAnswer(row, { reportId: currentReportId, question, state, history: historyForModel() });
       } else {
         result = await fetchJson("/api/chat", {
           method: "POST",
