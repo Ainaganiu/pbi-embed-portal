@@ -148,9 +148,11 @@ app.post("/api/chat", async (req, res) => {
           `statement) that answers it. No prose, no markdown fences, no ` +
           `explanation.\n\nDataset schema:\n${schemaDescription}`,
         messages: [{ role: "user", content: question }],
-        // DAX queries are short — cap generation well below the default to
-        // avoid paying for a rambling response.
-        maxTokens: 300,
+        // A DAX query itself is short, but reasoning models spend completion
+        // tokens on hidden reasoning first — a tight cap truncates them to
+        // nothing. This is a ceiling, not a target: non-reasoning models stop
+        // as soon as the query is written and never reach it.
+        maxTokens: 2000,
       })
     );
   } catch (err) {
@@ -192,9 +194,9 @@ app.post("/api/chat", async (req, res) => {
         },
       ],
       json: true,
-      // Enough room for a short answer + a chart with a few dozen points,
-      // without leaving the response length uncapped.
-      maxTokens: 700,
+      // Room for a short answer plus a chart spec, with headroom for
+      // reasoning models (see the note on the DAX call above).
+      maxTokens: 2500,
     });
 
     const parsed = JSON.parse(stripCodeFence(raw));

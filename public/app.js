@@ -32,6 +32,13 @@
     return div.innerHTML;
   }
 
+  function accentColor() {
+    return (
+      getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() ||
+      "#3b5bfd"
+    );
+  }
+
   async function fetchJson(url, options) {
     const res = await fetch(url, options);
     const data = await res.json().catch(() => ({}));
@@ -299,8 +306,9 @@
             {
               label: chart.label || "Value",
               data: chart.values,
-              backgroundColor: "#3b5bfd",
-              borderColor: "#3b5bfd",
+              // Follow the configured brand accent rather than a fixed colour.
+              backgroundColor: accentColor(),
+              borderColor: accentColor(),
               tension: 0.3,
             },
           ],
