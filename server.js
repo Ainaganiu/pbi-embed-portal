@@ -152,7 +152,7 @@ app.post("/api/chat", async (req, res) => {
         // tokens on hidden reasoning first — a tight cap truncates them to
         // nothing. This is a ceiling, not a target: non-reasoning models stop
         // as soon as the query is written and never reach it.
-        maxTokens: 2000,
+        maxTokens: 5000,
       })
     );
   } catch (err) {
@@ -205,7 +205,7 @@ app.post("/api/chat", async (req, res) => {
       json: true,
       // Room for a short answer plus a chart spec, with headroom for
       // reasoning models (see the note on the DAX call above).
-      maxTokens: 2500,
+      maxTokens: 5000,
     });
 
     const parsed = JSON.parse(stripCodeFence(raw));
