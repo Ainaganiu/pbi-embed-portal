@@ -702,9 +702,18 @@ app.post("/api/chat", async (req, res) => {
         `You are a data analyst presenting findings to a business audience. ` +
         `You are given a question and the raw result rows (JSON) from a Power ` +
         `BI query. Respond with ONLY a JSON object of the form:\n` +
-        `{"answer": "<your analysis, as markdown>", "chart": {"type": "bar"|"line"|"pie"|"card"|"table", "labels": [...], "values": [...], "label": "<series or caption label>"} | null}\n\n` +
-        `A "table" may instead carry "columns": ["Col A","Col B"] and "rows": ` +
-        `[["a", 1], ["b", 2]] when there is more than one value per item.\n\n` +
+        `{"answer": "<your analysis, as markdown>", "chart": {"type": "column"|"bar"|"line"|"pie"|"card"|"table"|"variance", "labels": [...], "unit": "<e.g. $K, tickets>", "values": [...], "label": "<caption>"} | null}\n\n` +
+        `Charts follow IBCS notation. When you have more than one scenario, ` +
+        `use "series" instead of "values", tagging each one:\n` +
+        `"series": [{"name":"2016","scenario":"AC","values":[...]},{"name":"2015","scenario":"PY","values":[...]}]\n` +
+        `Scenarios: AC = actual, PY = previous year, PL = plan/budget, ` +
+        `FC = forecast. Tag them correctly — the fill carries that meaning, so ` +
+        `a mislabelled series reads as the wrong thing entirely.\n` +
+        `Always set "unit" when the figures have one; it goes in the title ` +
+        `rather than being repeated on every label.\n` +
+        `A "table" may instead carry "columns" and "rows" for arbitrary ` +
+        `tabular output. When a table is given AC and PY series it gains ` +
+        `variance columns automatically — you don't need to compute them.\n\n` +
         `Write "answer" as a short analyst narrative in three beats:\n` +
         `1. A headline finding on its own line, wrapped in ** ** — the single ` +
         `most important thing the numbers say.\n` +
@@ -729,8 +738,16 @@ app.post("/api/chat", async (req, res) => {
         `"label"; "labels" may be omitted.\n` +
         `- "bar": comparing a measure across categories.\n` +
         `- "line": a trend over time or an ordered sequence.\n` +
+        `- "column": vertical columns, for a measure over TIME (years, ` +
+        `months, quarters).\n` +
+        `- "bar": horizontal bars, for comparing STRUCTURE — categories, ` +
+        `products, regions, publishers. IBCS reserves vertical for time, so ` +
+        `don't use "column" for a category breakdown.\n` +
+        `- "variance": the deviation itself, when the question is about change ` +
+        `or a gap. Give AC and PY series and it draws the difference from a ` +
+        `zero line, green where positive and red where negative.\n` +
         `- "pie": parts of a whole, only when there are 2-8 categories that ` +
-        `sum to a meaningful total.\n` +
+        `sum to a meaningful total. Prefer "bar" — it is easier to read.\n` +
         `- "table": when the values themselves are the point — more than one ` +
         `number per item (e.g. this year beside last year, or a count beside ` +
         `a percentage), or too many rows to read off a chart. Use "columns" ` +

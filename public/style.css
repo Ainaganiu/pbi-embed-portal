@@ -537,34 +537,60 @@ button {
   border-color: var(--accent);
 }
 
-/* axes / gridlines shared by the D3 renderers */
-
-.chat-chart .grid .domain,
-#chart-modal-body .grid .domain {
-  display: none;
-}
-
-.chat-chart .grid line,
-#chart-modal-body .grid line {
-  stroke: var(--border);
-  stroke-dasharray: 2 2;
-}
+/* IBCS chart typography. No gridline styles here by design — the standard
+   removes gridlines rather than styling them, and the renderers draw a single
+   baseline instead of an axis. */
 
 .chat-chart text,
 #chart-modal-body text {
-  fill: var(--text-muted);
   font-family: inherit;
+  fill: #1a1a1a;
+}
+
+/* Category labels sit quieter than the data they describe. */
+.ibcs-cat {
   font-size: 11px;
+  fill: var(--text-muted);
 }
 
-.chat-chart .domain,
-#chart-modal-body .domain {
-  stroke: var(--border-strong);
+/* Direct data labels replace the value axis. */
+.ibcs-value {
+  font-size: 10.5px;
+  font-weight: 600;
+  fill: #1a1a1a;
 }
 
-.chat-chart .tick line,
-#chart-modal-body .tick line {
-  stroke: var(--border);
+.ibcs-series-label {
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.ibcs-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin-bottom: 0.35rem;
+}
+
+.ibcs-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.4rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.ibcs-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.ibcs-swatch {
+  width: 10px;
+  height: 10px;
+  display: inline-block;
 }
 
 /* card (single-value KPI) */
@@ -1276,4 +1302,54 @@ button {
 .clarify-note {
   font-size: 0.72rem;
   color: var(--text-faint);
+}
+
+/* IBCS table: no vertical rules, hairline horizontals, figures right-aligned
+   with tabular numerals so columns of numbers line up for scanning. */
+
+.ibcs-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.78rem;
+}
+
+.ibcs-table th {
+  background: none;
+  border-bottom: 1px solid #1a1a1a;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 0.3rem 0.5rem;
+  white-space: nowrap;
+}
+
+.ibcs-table th.num,
+.ibcs-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ibcs-table td {
+  border-bottom: 1px solid #eceef1;
+  padding: 0.32rem 0.5rem;
+  color: #1a1a1a;
+}
+
+.ibcs-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Colour appears only on variance, so red always means the same thing. */
+.ibcs-table td.var-good { color: #1f7a4d; }
+.ibcs-table td.var-bad  { color: #c0362c; }
+
+.chart-table-wrap {
+  border: none;
+  border-radius: 0;
+}
+
+.chart-card-value {
+  color: #1a1a1a !important;
 }
