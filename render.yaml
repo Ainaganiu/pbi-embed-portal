@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: pbi-embed-portal
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/reports
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+
+      # Azure AD service principal
+      - key: PBI_TENANT_ID
+        sync: false
+      - key: PBI_CLIENT_ID
+        sync: false
+      - key: PBI_CLIENT_SECRET
+        sync: false
+
+      # Per-report IDs — add one trio of vars per report in config/reports.js
+      - key: PBI_WORKSPACE_ID_SAMPLE
+        sync: false
+      - key: PBI_REPORT_ID_SAMPLE
+        sync: false
+      - key: PBI_DATASET_ID_SAMPLE
+        sync: false
+
+      # Optional AI chat panel — leave LLM_API_KEY unset to disable it
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: LLM_API_BASE
+        sync: false

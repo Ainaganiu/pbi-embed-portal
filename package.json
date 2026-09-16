@@ -1,0 +1,17 @@
+{
+  "name": "pbi-embed-portal",
+  "version": "1.0.0",
+  "description": "Power BI Embedded portal with an optional AI chat + chart panel",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}
