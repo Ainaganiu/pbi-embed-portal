@@ -198,16 +198,31 @@
   const X0_PADDING = 0.3;
   const X1_PADDING = 0.08;
 
+  // d3's own band arithmetic. .padding(p) sets paddingInner and paddingOuter
+  // alike, so the step divides by n + p, not by n: a bar is narrower than
+  // extent/n, and guessing otherwise overestimates the band and lets a chart
+  // keep direct labels it has no room for.
+  function bandWidth(extent, count, padding) {
+    const step = extent / Math.max(1, Math.max(1, count) - padding + 2 * padding);
+    return step * (1 - padding);
+  }
+
   function renderColumn(container, spec, width, height) {
     const series = seriesOf(spec);
     const labels = labelsOf(spec);
     addTitle(container, spec);
 
-    // The raw slot per bar, less what the two band paddings below will take
-    // out of it -- an estimate of x1.bandwidth() before the scales exist, so
-    // the margin and the axis can be decided together from one number.
-    const slot = (width - 16) / Math.max(1, labels.length) / Math.max(1, series.length);
-    const approxBand = slot * (1 - X0_PADDING) * (1 - X1_PADDING);
+    // x1.bandwidth() as it will actually come out, run through the same
+    // arithmetic as the scales below but against the narrow margin. Where that
+    // predicts room for direct labels the margin does stay narrow, so the
+    // prediction is exact; where it does not, the margin widens and the real
+    // band only gets smaller -- still no room, which is what the axis is for.
+    // Decided once, here, so the margin and the axis cannot disagree.
+    const approxBand = bandWidth(
+      bandWidth(width - 16, labels.length, X0_PADDING),
+      series.length,
+      X1_PADDING
+    );
     const needsAxis = !ChartGeometry.labelsFit(approxBand);
     const margin = { top: 18, right: 8, bottom: 30, left: needsAxis ? 34 : 8 };
     const innerW = width - margin.left - margin.right;
