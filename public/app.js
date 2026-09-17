@@ -273,6 +273,7 @@
     closeChat();
     resetChatLog();
     loadHistory(id);
+    loadStarters(id);
     if (history.length) {
       hideEmptyState();
       replayHistory();
@@ -386,6 +387,27 @@
     } catch {
       history = [];
     }
+  }
+
+  // Generated from the report's own schema, so the empty panel is useful on
+  // first open rather than offering the same four prompts everywhere.
+  async function loadStarters(reportId) {
+    const host = document.getElementById("chat-suggestions");
+    host.innerHTML = "";
+    let starters = [];
+    try {
+      starters = (await fetchJson(`/api/chat/starters/${encodeURIComponent(reportId)}`)).starters || [];
+    } catch {
+      return; // the panel is still usable without them
+    }
+    starters.forEach((q) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "suggestion";
+      btn.textContent = q;
+      btn.addEventListener("click", () => { if (currentReportId) askQuestion(q); });
+      host.appendChild(btn);
+    });
   }
 
   function saveHistory() {
@@ -603,6 +625,22 @@
     submit.textContent = "Continue";
     submit.disabled = true;
     actions.appendChild(submit);
+
+    // An ambiguous question is otherwise a hard stop until the user engages
+    // with the chips. Sometimes they just want an answer.
+    const decide = document.createElement("button");
+    decide.type = "button";
+    decide.className = "clarify-skip";
+    decide.textContent = "Just choose for me";
+    decide.addEventListener("click", () => {
+      const original = pendingClarifyQuestion || "";
+      wrap.remove();
+      askQuestion(
+        `${original} — take the most reasonable reading and answer it; ` +
+        `state the assumption you made in your first line.`
+      );
+    });
+    actions.appendChild(decide);
 
     const note = document.createElement("span");
     note.className = "clarify-note";
@@ -1079,15 +1117,6 @@
     // Keep what they typed if the question was refused — clearing it would
     // lose the question to a race they can't see.
     if (askQuestion(question)) chatInput.value = "";
-  });
-
-  // Suggested prompts — one click to a useful first question, and they double
-  // as a hint that the panel understands "what's on screen" as well as data.
-  document.querySelectorAll("#chat-suggestions .suggestion").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (!currentReportId) return;
-      askQuestion(btn.dataset.q);
-    });
   });
 
   // ---------- branding ----------

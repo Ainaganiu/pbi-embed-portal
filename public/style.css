@@ -1434,6 +1434,17 @@ button {
   color: var(--text-faint);
 }
 
+.clarify-skip {
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.clarify-skip:hover { color: var(--text); }
+
 /* IBCS table: no vertical rules, hairline horizontals, figures right-aligned
    with tabular numerals so columns of numbers line up for scanning. */
 

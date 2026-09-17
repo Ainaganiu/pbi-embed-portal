@@ -15,6 +15,7 @@ const { chooseRoute } = require("../lib/route");
 const { sanitizeHistory } = require("../lib/chatHelpers");
 const { describeFilters } = require("../lib/answer/state");
 const { describe: describeError } = require("../lib/errors");
+const { startersFor, FALLBACK_STARTERS } = require("../lib/starters");
 
 const PIPELINES = {
   screen: require("../lib/answer/screen"),
@@ -40,6 +41,27 @@ function withStreaming(provider) {
     },
   };
 }
+
+// Registered ahead of POST "/" as a matter of habit for path-prefixed
+// routers, though GET and POST on distinct paths don't actually collide in
+// Express -- there is no earlier route here that this one could be swallowed
+// by.
+router.get("/starters/:reportId", async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const report = await getReport(req.params.reportId);
+    const provider = getProvider({
+      provider: settings.llmProvider,
+      apiKey: settings.llmApiKey,
+      model: settings.llmModel,
+      apiBase: settings.llmApiBase,
+    });
+    res.json({ starters: await startersFor(provider, report) });
+  } catch (err) {
+    console.error("[starters] request failed:", err.message);
+    res.json({ starters: FALLBACK_STARTERS });
+  }
+});
 
 router.post("/", async (req, res) => {
   const { reportId, question, state } = req.body || {};
