@@ -957,19 +957,32 @@
   // the original rather than depending on the transcript still being there.
   let pendingClarifyQuestion = null;
 
+  // One question at a time. `inFlight` holds a single AbortController, so a
+  // second question would overwrite it: the first request would keep streaming
+  // — and keep spending on provider and Power BI calls — with nothing left
+  // able to stop it, and whichever finished first would put the button back to
+  // "Send" while the other was still running. This flag is set synchronously
+  // rather than reading `inFlight`, because the slot isn't filled until the
+  // view has been captured, and capture is the slowest part of the request.
+  let asking = false;
+
   function askQuestion(question) {
+    if (asking) return false;
+    asking = true;
     pendingClarifyQuestion = question;
     appendUserRow(question);
     const row = appendThinkingRow();
-    runAnswer(row, question);
+    runAnswer(row, question).finally(() => { asking = false; });
+    return true;
   }
 
   chatForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const question = chatInput.value.trim();
     if (!question || !currentReportId) return;
-    chatInput.value = "";
-    askQuestion(question);
+    // Keep what they typed if the question was refused — clearing it would
+    // lose the question to a race they can't see.
+    if (askQuestion(question)) chatInput.value = "";
   });
 
   // Suggested prompts — one click to a useful first question, and they double
