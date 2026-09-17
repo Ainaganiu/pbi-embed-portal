@@ -162,6 +162,85 @@ test("a table spec keeps every column, category first", () => {
   assert.deepEqual(spec.rows, [["Action", 1, 2, 3]]);
 });
 
+// ---- two grouping dimensions --------------------------------------------
+//
+// The reported failure: "SLA breaches by channel and issue type" grouped by
+// two columns, and the table showed only the first. Four interaction types
+// repeated seven times down the page with nothing saying which issue each
+// row was -- the column that distinguished them was dropped on the way to
+// the screen, while the model's narrative could still see it in the rows and
+// named issues the table never showed.
+const slaRows = () => {
+  const channels = [
+    ["Calls", 3897, 3043],
+    ["Chats", 1308, 439],
+    ["Emails", 2708, 2254],
+    ["Escalations", 221, 221],
+  ];
+  const issues = ["Mobile App Issue", "Fraud Alert", "Close Account", "Open/Account Question"];
+  const rows = [];
+  for (const issue of issues) {
+    for (const [channel, total, breaches] of channels) {
+      rows.push({
+        "Data[Interaction Type]": channel,
+        "Data[Issue Type]": issue,
+        "[Total Interactions]": total,
+        "[Breaches (Outside SLA)]": breaches,
+      });
+    }
+  }
+  return rows;
+};
+
+test("a table keeps every grouping column, not just the first", () => {
+  const spec = buildChartSpec("sla breaches by channel and issue", slaRows());
+  assert.equal(spec.type, "table");
+  assert.deepEqual(spec.columns, [
+    "Interaction Type",
+    "Issue Type",
+    "Total Interactions",
+    "Breaches (Outside SLA)",
+  ]);
+  assert.deepEqual(
+    spec.rows[0],
+    ["Calls", "Mobile App Issue", 3897, 3043],
+    "the issue type is what tells one Calls row from the next"
+  );
+});
+
+test("two dimensions and one measure is a table, not a bar with repeated labels", () => {
+  const rows = slaRows().map((r) => ({
+    "Data[Interaction Type]": r["Data[Interaction Type]"],
+    "Data[Issue Type]": r["Data[Issue Type]"],
+    "[Breaches (Outside SLA)]": r["[Breaches (Outside SLA)]"],
+  }));
+  const got = chooseChartType("sla breaches by channel and issue", rows);
+  assert.equal(got.type, "table", "a flat bar would label four bars 'Calls' and mean nothing");
+  assert.equal(got.fixed, true);
+});
+
+test("a constant grouping column does not force a table", () => {
+  // SUMMARIZECOLUMNS over Year and Genre, filtered to one year: the year is
+  // technically a second dimension but distinguishes nothing, so the chart
+  // should still be a bar by genre.
+  const rows = genres(4).map((r) => ({ "Date[Year]": "2016", ...r }));
+  assert.equal(chooseChartType("sales by genre in 2016", rows).type, "bar");
+});
+
+test("a chart plots the dimension that actually varies, not whichever came first", () => {
+  const rows = genres(4).map((r) => ({ "Date[Year]": "2016", ...r }));
+  const spec = buildChartSpec("sales by genre in 2016", rows);
+  assert.deepEqual(
+    spec.labels,
+    ["Action", "Sports", "Shooter", "Role-Playing"],
+    "labelling every bar 2016 would say nothing at all"
+  );
+});
+
+test("valid types for two-dimension rows offer only the table", () => {
+  assert.deepEqual(validTypesFor(slaRows()), ["table"]);
+});
+
 test("a single value builds a card", () => {
   const spec = buildChartSpec("total sales in 2015", [{ "[Total Sales]": 330560 }]);
   assert.equal(spec.type, "card");

@@ -657,13 +657,28 @@
 
     const isVarianceCol = columns.map((c) => c === "Δ" || c === "Δ%");
 
+    // Alignment follows what a column holds, not where it sits. A query
+    // grouped by two columns puts a second text column next to the first,
+    // and right-aligning "Mobile App Issue" against a left-aligned "Calls"
+    // reads as a broken table.
+    const isNumericCol = columns.map((_, i) => {
+      let sawNumber = false;
+      for (const row of rows) {
+        const cell = row[i];
+        if (cell === null || cell === undefined) continue;
+        if (typeof cell !== "number") return false;
+        sawNumber = true;
+      }
+      return sawNumber;
+    });
+
     table
       .append("thead")
       .append("tr")
       .selectAll("th")
       .data(columns)
       .join("th")
-      .attr("class", (d, i) => (i === 0 ? "" : "num"))
+      .attr("class", (d, i) => (isNumericCol[i] ? "num" : ""))
       .text((d) => d);
 
     table
@@ -675,7 +690,7 @@
       .data((row) => row.map((cell, i) => ({ cell, i })))
       .join("td")
       .attr("class", (d) => {
-        if (d.i === 0) return "";
+        if (!isNumericCol[d.i]) return "";
         const classes = ["num"];
         if (isVarianceCol[d.i] && typeof d.cell === "number") {
           classes.push(d.cell >= 0 ? "var-good" : "var-bad");
