@@ -168,10 +168,10 @@
             const values = (slicer.filters || []).flatMap((f) => f.values || []).join(", ");
             entry.slicerState = values || "(no selection — showing all)";
           } else {
-            // The visual the question is about is the answer, so read it
-            // properly; everything else only needs enough for context.
-            const rows = isFocus ? 50 : 10;
-            const result = await v.exportData(models().ExportDataType.Summarized, rows);
+            // Uniform: the router names the focused visual only after this has
+            // run, so capture can't favour one. Mirrors
+            // EXPORT_ROWS_PER_VISUAL in lib/budgets.js.
+            const result = await v.exportData(models().ExportDataType.Summarized, 30);
             entry.data = result && result.data ? result.data : null;
           }
         } catch (err) {
@@ -415,8 +415,10 @@
   // identity, so a server-side transcript would be shared by every visitor.
   // Per-browser storage keeps one person's conversation to themselves.
 
-  const HISTORY_LIMIT = 15; // exchanges kept per report
-  const HISTORY_SENT_TO_MODEL = 4; // recent exchanges given to the LLM
+  // Mirrors HISTORY_EXCHANGES_STORED / HISTORY_EXCHANGES_TO_MODEL in
+  // lib/budgets.js — the browser has no require, so keep them in step by hand.
+  const HISTORY_LIMIT = 40;
+  const HISTORY_SENT_TO_MODEL = 10;
 
   let history = []; // [{ q, result }]
 

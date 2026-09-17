@@ -29,6 +29,7 @@ const {
   splitFollowUps,
   emitSafe,
 } = require("./lib/chatHelpers");
+const BUDGETS = require("./lib/budgets");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -115,9 +116,6 @@ app.get("/api/embed-token/:id", async (req, res) => {
   }
 });
 
-const MAX_RESULT_ROWS = 50;
-const MAX_RESULT_CHARS = 20_000;
-
 // problemContext, sanitizeHistory and stripCodeFence now live in
 // lib/chatHelpers.js, shared with the authoring route.
 
@@ -138,12 +136,8 @@ const MAX_RESULT_CHARS = 20_000;
 // deliberately tight: for "what is this telling me?" the top few rows carry
 // the story, and trimming the payload cuts response time substantially,
 // because the model's reasoning scales with how much data it is handed.
-const MAX_VISUALS_IN_PROMPT = 25;
-const MAX_CHARS_PER_VISUAL = 300;
 // When the question is about one specific visual, that visual is the answer,
 // so it gets room for its full row set while the rest stay as brief context.
-const MAX_CHARS_FOCUSED_VISUAL = 1800;
-const MAX_STATE_CHARS = 7500;
 
 function describeFilters(filters) {
   if (!Array.isArray(filters) || filters.length === 0) return "none";
@@ -193,7 +187,7 @@ function renderReportState(state) {
   lines.push(`Report-level filters: ${describeFilters(state.reportFilters)}`);
   lines.push(`Page-level filters: ${describeFilters(state.pageFilters)}`);
 
-  const visuals = (state.visuals || []).slice(0, MAX_VISUALS_IN_PROMPT);
+  const visuals = (state.visuals || []).slice(0, BUDGETS.VISUALS_IN_PROMPT);
   lines.push(`\nVisuals currently on this page (${(state.visuals || []).length}):`);
 
   visuals.forEach((v, i) => {
@@ -203,15 +197,15 @@ function renderReportState(state) {
     if (v.visualFilters) lines.push(`   filters on this visual: ${describeFilters(v.visualFilters)}`);
     if (v.error) lines.push(`   (data unavailable: ${v.error})`);
     else if (v.data) {
-      const cap = v.focus ? MAX_CHARS_FOCUSED_VISUAL : MAX_CHARS_PER_VISUAL;
+      const cap = v.focus ? BUDGETS.CHARS_FOCUSED_VISUAL : BUDGETS.CHARS_PER_VISUAL;
       lines.push(`   data:\n${String(v.data).slice(0, cap)}`);
     }
   });
 
-  if ((state.visuals || []).length > MAX_VISUALS_IN_PROMPT) {
-    lines.push(`\n(${state.visuals.length - MAX_VISUALS_IN_PROMPT} further visuals omitted.)`);
+  if ((state.visuals || []).length > BUDGETS.VISUALS_IN_PROMPT) {
+    lines.push(`\n(${state.visuals.length - BUDGETS.VISUALS_IN_PROMPT} further visuals omitted.)`);
   }
-  return lines.join("\n").slice(0, MAX_STATE_CHARS);
+  return lines.join("\n").slice(0, BUDGETS.STATE_CHARS);
 }
 
 function buildDaxSystemPrompt(report, opts = {}) {
@@ -678,7 +672,7 @@ app.post("/api/chat/visual", async (req, res) => {
                   `ARE the slice that was asked for — state them as fact, and ` +
                   `do not speculate about whether the filter was applied:\n` +
                   `${usedDax}\n\n` +
-                  `Rows it returned:\n${JSON.stringify(rows || []).slice(0, MAX_RESULT_CHARS)}`),
+                  `Rows it returned:\n${JSON.stringify(rows || []).slice(0, BUDGETS.RESULT_CHARS)}`),
             messages: [...priorTurns, { role: "user", content: question }],
             maxTokens: 5000,
             // Reconciling screen figures against queried ones is the one
@@ -913,9 +907,9 @@ app.post("/api/chat", async (req, res) => {
   }
 
   const rowCount = rows.length;
-  let rowsForPrompt = JSON.stringify(rows.slice(0, MAX_RESULT_ROWS));
-  if (rowsForPrompt.length > MAX_RESULT_CHARS) {
-    rowsForPrompt = rowsForPrompt.slice(0, MAX_RESULT_CHARS);
+  let rowsForPrompt = JSON.stringify(rows.slice(0, BUDGETS.RESULT_ROWS));
+  if (rowsForPrompt.length > BUDGETS.RESULT_CHARS) {
+    rowsForPrompt = rowsForPrompt.slice(0, BUDGETS.RESULT_CHARS);
   }
 
   let answer = "";
