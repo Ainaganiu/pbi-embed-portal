@@ -141,11 +141,22 @@ router.delete("/reports/:id", async (req, res) => {
 // Hit: GET /api/admin/probe-metadata/<reportId> while logged into /admin.
 // ---------------------------------------------------------------------------
 const PROBES = [
-  ["INFO.VIEW.MEASURES", "EVALUATE INFO.VIEW.MEASURES()"],
-  ["INFO.MEASURES", "EVALUATE INFO.MEASURES()"],
-  ["INFO.VIEW.COLUMNS", "EVALUATE INFO.VIEW.COLUMNS()"],
-  ["INFO.VIEW.TABLES", "EVALUATE INFO.VIEW.TABLES()"],
-  ["INFO.VIEW.RELATIONSHIPS", "EVALUATE INFO.VIEW.RELATIONSHIPS()"],
+  [
+    "measures",
+    `EVALUATE SELECTCOLUMNS(INFO.VIEW.MEASURES(), "Name", [Name], "Tbl", [Table], "DataType", [DataType], "FormatString", [FormatString], "Expression", [Expression], "Description", [Description], "IsHidden", [IsHidden])`,
+  ],
+  [
+    "columns",
+    `EVALUATE SELECTCOLUMNS(FILTER(INFO.VIEW.COLUMNS(), [IsHidden] = FALSE() && [Type] <> "RowNumber"), "Name", [Name], "Tbl", [Table], "DataType", [DataType], "FormatString", [FormatString], "SummarizeBy", [SummarizeBy], "Description", [Description])`,
+  ],
+  [
+    "tables",
+    `EVALUATE SELECTCOLUMNS(INFO.VIEW.TABLES(), "Name", [Name], "IsHidden", [IsHidden], "DataCategory", [DataCategory], "StorageMode", [StorageMode])`,
+  ],
+  [
+    "relationships",
+    `EVALUATE SELECTCOLUMNS(INFO.VIEW.RELATIONSHIPS(), "Rel", [Relationship], "IsActive", [IsActive], "FromTable", [FromTable], "ToTable", [ToTable])`,
+  ],
 ];
 
 router.get("/probe-metadata/:reportId", async (req, res) => {
@@ -174,8 +185,7 @@ router.get("/probe-metadata/:reportId", async (req, res) => {
         ok: true,
         rowCount: rows.length,
         columns: rows.length ? Object.keys(rows[0]) : [],
-        // Two rows is enough to see the shape without dumping a whole model.
-        sample: rows.slice(0, 2),
+        rows,
       });
     } catch (err) {
       out.push({ probe: name, ok: false, error: err.message.slice(0, 500) });
