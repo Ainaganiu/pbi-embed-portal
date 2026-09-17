@@ -144,6 +144,53 @@ test("a question with no breakdown language raises nothing even over a raw table
   assert.deepEqual(groundingIssues("what is total sales", `EVALUATE ROW("Total", [Total Sales])`), []);
 });
 
+test("UNION ALL is caught — it is SQL, not DAX", () => {
+  // The real one: asked to compare two years, the model wrote one ROW per
+  // year and joined them with a SQL operator that does not exist in DAX.
+  const issues = groundingIssues(
+    "average resolution time for emails in 2022 and 2023",
+    `EVALUATE ROW("2022", CALCULATE([M], 'Date'[Year] = 2022))\n` +
+      `UNION ALL\n` +
+      `EVALUATE ROW("2023", CALCULATE([M], 'Date'[Year] = 2023))`
+  );
+  assert.match(issues.join(" "), /UNION ALL|one EVALUATE/i);
+});
+
+test("two EVALUATE statements are caught — the endpoint runs one query", () => {
+  const issues = groundingIssues(
+    "emails in 2022 and 2023",
+    `EVALUATE ROW("a", [M])\nEVALUATE ROW("b", [M])`
+  );
+  assert.match(issues.join(" "), /single EVALUATE/i);
+  assert.match(issues.join(" "), /2 EVALUATE statements/i, "say how many, so the correction is concrete");
+});
+
+test("a single EVALUATE raises nothing on that count", () => {
+  const issues = groundingIssues(
+    "sales by genre",
+    `EVALUATE SUMMARIZECOLUMNS('Data'[Genre], "Sales", [Sales])`
+  );
+  assert.ok(!/EVALUATE|UNION/i.test(issues.join(" ")));
+});
+
+test("a question naming two years wants them grouped, not one query per year", () => {
+  // "in 2022 and 2023" carries no 'by', no 'top N' and no 'compare', but it
+  // is still a comparison across a dimension.
+  const issues = groundingIssues(
+    "average resolution time for emails in 2022 and 2023",
+    `EVALUATE ROW("v", CALCULATE([M], 'Date'[Year] = 2022))`
+  );
+  assert.match(issues.join(" "), /group|aggregat/i);
+});
+
+test("a question naming one year is not treated as a comparison", () => {
+  const issues = groundingIssues(
+    "average resolution time for emails in 2022",
+    `EVALUATE ROW("v", CALCULATE([M], 'Date'[Year] = 2022))`
+  );
+  assert.ok(!/group|aggregat/i.test(issues.join(" ")));
+});
+
 test("'by' followed by a number is not mistaken for a breakdown dimension", () => {
   // "grew by 5%" names no category to group by.
   assert.deepEqual(groundingIssues("how much did sales grow by 5%", `EVALUATE ROW("Delta", [Delta])`), []);
