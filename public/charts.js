@@ -61,8 +61,18 @@
     );
   }
 
-  function formatValue(n) {
+  // `format` is the optional percentage hint the DAX-generating model can
+  // attach to a spec (lib/chartChoice.js) -- {percent, decimals, scale}.
+  // Everything below the check is the pre-existing abbreviation logic,
+  // which makes no sense applied to a percentage (a rate is never in the
+  // millions), so a percent spec skips it entirely rather than getting a
+  // "42%" that occasionally reads as "0.4K%".
+  function formatValue(n, format) {
     if (n === null || n === undefined || Number.isNaN(n)) return "";
+    if (format && format.percent) {
+      const scaled = format.scale === "already-percent" ? n : n * 100;
+      return scaled.toFixed(format.decimals ?? 0) + "%";
+    }
     const abs = Math.abs(n);
     if (abs >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
     if (abs >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
@@ -181,10 +191,10 @@
   // IBCS drops the y-axis because direct labels carry the values. When the
   // bands are too narrow for direct labels, dropping both leaves a chart with
   // no numbers on it anywhere -- so the axis comes back instead.
-  function addValueAxis(g, y, innerW) {
+  function addValueAxis(g, y, innerW, format) {
     const axis = g
       .append("g")
-      .call(d3.axisLeft(y).ticks(3).tickSize(-innerW).tickFormat(formatValue));
+      .call(d3.axisLeft(y).ticks(3).tickSize(-innerW).tickFormat((v) => formatValue(v, format)));
     axis.select(".domain").remove();
     axis.selectAll("line").attr("stroke", HAIRLINE);
     axis.selectAll("text").attr("class", "ibcs-cat");
@@ -275,12 +285,12 @@
             .attr("y", v >= 0 ? y(v) - 4 : y(v) + 4)
             .attr("dy", v >= 0 ? null : "0.8em")
             .attr("text-anchor", "middle")
-            .text(formatValue(v));
+            .text(formatValue(v, spec.format));
         }
       });
     });
 
-    if (needsAxis) addValueAxis(g, y, innerW);
+    if (needsAxis) addValueAxis(g, y, innerW, spec.format);
 
     // The zero line, drawn over any gridlines the axis above brought with it.
     g.append("line")
@@ -372,7 +382,7 @@
           .attr("y", y1(s.name) + y1.bandwidth() / 2)
           .attr("dy", "0.35em")
           .attr("text-anchor", v >= 0 ? "start" : "end")
-          .text(formatValue(v));
+          .text(formatValue(v, spec.format));
       });
     });
 
@@ -520,7 +530,7 @@
         .attr("dy", "0.35em")
         .attr("text-anchor", positive ? "start" : "end")
         .attr("fill", positive ? GOOD : BAD)
-        .text((v >= 0 ? "+" : "") + formatValue(v));
+        .text((v >= 0 ? "+" : "") + formatValue(v, spec.format));
     });
 
     g.append("line")
@@ -609,7 +619,7 @@
       .attr("class", "chart-card-value")
       .style("font-size", Math.max(28, Math.min(64, width / 6)) + "px")
       .attr("title", fullNumber(value))
-      .text(formatValue(value));
+      .text(formatValue(value, spec.format));
     if (caption) wrap.append("div").attr("class", "chart-card-caption").text(caption);
   }
 

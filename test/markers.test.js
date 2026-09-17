@@ -10,7 +10,52 @@ const {
   emitSafe,
   confirmsPreviousTurn,
   schemaContext,
+  splitFormatHint,
 } = require("../lib/chatHelpers");
+
+test("a DAX reply with no FORMAT line is untouched", () => {
+  const got = splitFormatHint(`EVALUATE SUMMARIZECOLUMNS('Data'[Genre], "Sales", [Sales])`);
+  assert.equal(got.dax, `EVALUATE SUMMARIZECOLUMNS('Data'[Genre], "Sales", [Sales])`);
+  assert.equal(got.format, null);
+});
+
+test("a trailing FORMAT line is stripped from the query and parsed", () => {
+  const got = splitFormatHint(
+    `EVALUATE ROW("Rate", [Conversion Rate])\nFORMAT: {"percent":true,"decimals":1,"scale":"fraction"}`
+  );
+  assert.equal(got.dax, `EVALUATE ROW("Rate", [Conversion Rate])`);
+  assert.deepEqual(got.format, { percent: true, decimals: 1, scale: "fraction" });
+});
+
+test("an already-percent scale is recognised", () => {
+  const got = splitFormatHint(`EVALUATE ROW("Rate", [Conversion Rate])\nFORMAT: {"percent":true,"decimals":0,"scale":"already-percent"}`);
+  assert.equal(got.format.scale, "already-percent");
+});
+
+test("decimals is clamped to a sane range and defaults to 0 when missing", () => {
+  const got = splitFormatHint(`EVALUATE X\nFORMAT: {"percent":true,"decimals":9}`);
+  assert.equal(got.format.decimals, 4, "clamped rather than trusted verbatim");
+
+  const got2 = splitFormatHint(`EVALUATE X\nFORMAT: {"percent":true}`);
+  assert.equal(got2.format.decimals, 0);
+});
+
+test("a malformed FORMAT payload costs the hint, not the query", () => {
+  const got = splitFormatHint(`EVALUATE X\nFORMAT: {not json`);
+  assert.equal(got.dax, "EVALUATE X", "the marker line is still stripped so it never reaches Power BI");
+  assert.equal(got.format, null);
+});
+
+test("a real DAX FORMAT() function call is never mistaken for the marker", () => {
+  const got = splitFormatHint(`EVALUATE ROW("Pretty", FORMAT([Value], "0%"))`);
+  assert.equal(got.dax, `EVALUATE ROW("Pretty", FORMAT([Value], "0%"))`);
+  assert.equal(got.format, null);
+});
+
+test("percent explicitly false is treated the same as no hint at all", () => {
+  const got = splitFormatHint(`EVALUATE X\nFORMAT: {"percent":false}`);
+  assert.equal(got.format, null);
+});
 
 test("schemaContext with only a schema description returns it unchanged", () => {
   const got = schemaContext({ schemaDescription: "Data[Genre], [Sales]" });

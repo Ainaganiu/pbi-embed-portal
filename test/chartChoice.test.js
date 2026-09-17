@@ -277,3 +277,56 @@ test("valid types for a single number are just the card and the table", () => {
 test("rows with nothing numeric offer no chart at all", () => {
   assert.deepEqual(validTypesFor([{ "Data[Genre]": "Action" }]), []);
 });
+
+// ---- percentage formatting hint --------------------------------------
+
+const PERCENT_FORMAT = { percent: true, decimals: 1, scale: "fraction" };
+
+test("a format hint rides on a bar spec", () => {
+  const spec = buildChartSpec("conversion rate by genre", genres(4), { format: PERCENT_FORMAT });
+  assert.deepEqual(spec.format, PERCENT_FORMAT);
+});
+
+test("a format hint rides on a card spec", () => {
+  const spec = buildChartSpec("what is the conversion rate", [{ "[Rate]": 0.42 }], { format: PERCENT_FORMAT });
+  assert.equal(spec.type, "card");
+  assert.deepEqual(spec.format, PERCENT_FORMAT);
+});
+
+test("a format hint rides on a donut spec", () => {
+  const spec = buildChartSpec("break down the rate", genres(4), { intent: "share", format: PERCENT_FORMAT });
+  assert.equal(spec.type, "donut");
+  assert.deepEqual(spec.format, PERCENT_FORMAT);
+});
+
+test("a format hint rides on a two-series spec", () => {
+  const rows = years(3).map((r) => ({ ...r, "[Rate PY]": 0.1 }));
+  const spec = buildChartSpec("rate by year", rows, { format: PERCENT_FORMAT });
+  assert.ok(spec.series);
+  assert.deepEqual(spec.format, PERCENT_FORMAT);
+});
+
+test("no format option means no format key at all, not a null one", () => {
+  const spec = buildChartSpec("sales by genre", genres(4));
+  assert.ok(!("format" in spec));
+});
+
+test("a table spec never carries a format hint, even when one is supplied", () => {
+  const rows = [
+    { "Data[Game]": "Fifa 17", "[2016]": 8410, "[2015]": 7200 },
+    { "Data[Game]": "Far Cry", "[2016]": 3540, "[2015]": 4100 },
+  ];
+  const spec = buildChartSpec("compare these games", rows, { format: PERCENT_FORMAT });
+  assert.equal(spec.type, "table");
+  assert.ok(!("format" in spec), "a table can mix percent and non-percent columns");
+});
+
+test("a truncated spec keeps both truncated and format together", () => {
+  const spec = buildChartSpec(
+    "sales by genre",
+    genres(14).concat(Array.from({ length: 10 }, (_, i) => ({ "Data[Genre]": `Extra ${i}`, "[Sales]": 100 + i }))),
+    { format: PERCENT_FORMAT }
+  );
+  assert.ok(spec.truncated);
+  assert.deepEqual(spec.format, PERCENT_FORMAT);
+});

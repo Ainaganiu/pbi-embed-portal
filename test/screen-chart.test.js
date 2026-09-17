@@ -23,7 +23,7 @@ stub("lib/powerbi", {
     return queryResult.rows;
   },
 });
-stub("lib/answer/dax", { generateDaxFor: async () => "EVALUATE Sales" });
+stub("lib/answer/dax", { generateDaxFor: async () => ({ dax: "EVALUATE Sales", format: null }) });
 
 const screen = require(path.join(ROOT, "lib/answer/screen.js"));
 

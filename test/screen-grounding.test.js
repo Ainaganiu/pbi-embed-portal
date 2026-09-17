@@ -22,7 +22,7 @@ stub("lib/answer/dax", {
   generateDaxFor: async (_report, _provider, messages) => {
     const reply = daxReplies[daxCalls.length] || daxReplies[daxReplies.length - 1];
     daxCalls.push(messages);
-    return reply;
+    return { dax: reply, format: null };
   },
 });
 
