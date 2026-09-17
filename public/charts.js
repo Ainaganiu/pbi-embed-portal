@@ -18,7 +18,8 @@
 // background fills, no legend where a direct label will do, no axis where the
 // data labels already give the values.
 //
-// Entry point: renderChart(container, spec, { width, height }).
+// Entry point: renderChart(container, spec, { width, maxHeight }) -- the height
+// itself comes from the content, via ChartGeometry.
 //
 //   spec = {
 //     type: "bar" | "column" | "line" | "donut" | "card" | "table" | "variance",
@@ -174,6 +175,18 @@
     });
   }
 
+  // IBCS drops the y-axis because direct labels carry the values. When the
+  // bands are too narrow for direct labels, dropping both leaves a chart with
+  // no numbers on it anywhere -- so the axis comes back instead.
+  function addValueAxis(g, y, innerW) {
+    const axis = g
+      .append("g")
+      .call(d3.axisLeft(y).ticks(3).tickSize(-innerW).tickFormat(formatValue));
+    axis.select(".domain").remove();
+    axis.selectAll("line").attr("stroke", HAIRLINE);
+    axis.selectAll("text").attr("class", "ibcs-cat");
+  }
+
   // ---- vertical columns: time on the horizontal axis -----------------------
 
   function renderColumn(container, spec, width, height) {
@@ -181,7 +194,9 @@
     const labels = labelsOf(spec);
     addTitle(container, spec);
 
-    const margin = { top: 18, right: 8, bottom: 30, left: 8 };
+    const approxBand = (width - 16) / Math.max(1, labels.length) / Math.max(1, series.length);
+    const needsAxis = !ChartGeometry.labelsFit(approxBand);
+    const margin = { top: 18, right: 8, bottom: 30, left: needsAxis ? 34 : 8 };
     const innerW = width - margin.left - margin.right;
     const innerH = height - margin.top - margin.bottom;
 
@@ -195,8 +210,15 @@
       .range([0, x0.bandwidth()])
       .padding(0.08);
 
-    const maxVal = d3.max(series, (s) => d3.max(s.values)) || 1;
-    const y = d3.scaleLinear().domain([0, maxVal]).nice().range([innerH, 0]);
+    const all = series.flatMap((s) => s.values);
+    // Widened to include zero: a domain of [0, max] renders every negative
+    // value as a zero-height bar, which reads as "no data" rather than "down".
+    const y = d3
+      .scaleLinear()
+      .domain([Math.min(0, d3.min(all) ?? 0), Math.max(0, d3.max(all) ?? 1)])
+      .nice()
+      .range([innerH, 0]);
+    const zeroY = y(0);
 
     labels.forEach((label, i) => {
       const group = g.append("g").attr("transform", `translate(${x0(label)},0)`);
@@ -206,9 +228,9 @@
         group
           .append("rect")
           .attr("x", x1(s.name))
-          .attr("y", y(v))
+          .attr("y", Math.min(zeroY, y(v)))
           .attr("width", x1.bandwidth())
-          .attr("height", Math.max(0, innerH - y(v)))
+          .attr("height", Math.max(1, Math.abs(y(v) - zeroY)))
           .attr("fill", sc.fill)
           .attr("stroke", sc.stroke)
           .attr("stroke-width", sc.stroke === "none" ? 0 : 1)
@@ -216,7 +238,7 @@
           .text(`${label} · ${s.name}: ${fullNumber(v)}`);
 
         // Direct labels replace the y-axis entirely.
-        if (x1.bandwidth() > 22) {
+        if (!needsAxis) {
           group
             .append("text")
             .attr("class", "ibcs-value")
@@ -228,12 +250,14 @@
       });
     });
 
+    if (needsAxis) addValueAxis(g, y, innerW);
+
     // Baseline only — no gridlines, no y-axis.
     g.append("line")
       .attr("x1", 0)
       .attr("x2", innerW)
-      .attr("y1", innerH)
-      .attr("y2", innerH)
+      .attr("y1", zeroY)
+      .attr("y2", zeroY)
       .attr("stroke", INK);
 
     const crowded = x0.bandwidth() < 50;
@@ -270,12 +294,19 @@
       .domain(series.map((s) => s.name))
       .range([0, y0.bandwidth()])
       .padding(0.08);
-    const maxVal = d3.max(series, (s) => d3.max(s.values)) || 1;
-    const x = d3.scaleLinear().domain([0, maxVal]).range([0, innerW]);
+    const all = series.flatMap((s) => s.values);
+    // Widened to include zero: a domain of [0, max] renders every negative
+    // value as a zero-width bar, which reads as "no data" rather than "down".
+    const x = d3
+      .scaleLinear()
+      .domain([Math.min(0, d3.min(all) ?? 0), Math.max(0, d3.max(all) ?? 1)])
+      .range([0, innerW]);
+    const zeroX = x(0);
 
     labels.forEach((label, i) => {
       const group = g.append("g").attr("transform", `translate(0,${y0(label)})`);
 
+      const gutter = labelW - 12;
       group
         .append("text")
         .attr("class", "ibcs-cat")
@@ -283,6 +314,8 @@
         .attr("y", y0.bandwidth() / 2)
         .attr("dy", "0.35em")
         .attr("text-anchor", "end")
+        .text(ChartGeometry.truncateLabel(label, gutter))
+        .append("title")
         .text(label);
 
       series.forEach((s) => {
@@ -290,9 +323,9 @@
         const v = s.values[i] ?? 0;
         group
           .append("rect")
-          .attr("x", 0)
+          .attr("x", Math.min(zeroX, x(v)))
           .attr("y", y1(s.name))
-          .attr("width", Math.max(0, x(v)))
+          .attr("width", Math.max(1, Math.abs(x(v) - zeroX)))
           .attr("height", y1.bandwidth())
           .attr("fill", sc.fill)
           .attr("stroke", sc.stroke)
@@ -311,8 +344,8 @@
     });
 
     g.append("line")
-      .attr("x1", 0)
-      .attr("x2", 0)
+      .attr("x1", zeroX)
+      .attr("x2", zeroX)
       .attr("y1", 0)
       .attr("y2", innerH)
       .attr("stroke", INK);
@@ -436,12 +469,15 @@
         .append("title")
         .text(`${label}: ${v >= 0 ? "+" : ""}${fullNumber(v)}`);
 
+      const gutter = labelW - 12;
       g.append("text")
         .attr("class", "ibcs-cat")
         .attr("x", -8)
         .attr("y", y(label) + y.bandwidth() / 2)
         .attr("dy", "0.35em")
         .attr("text-anchor", "end")
+        .text(ChartGeometry.truncateLabel(label, gutter))
+        .append("title")
         .text(label);
 
       g.append("text")
@@ -625,14 +661,33 @@
     variance: renderVariance,
   };
 
+  // Whatever was drawn, as rows. The chart may be a truncated view of the
+  // answer; this is not -- it carries every category the spec holds.
+  function toCsv(spec) {
+    const esc = (v) => {
+      const s = String(v ?? "");
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    if (Array.isArray(spec.rows) && spec.rows.length) {
+      return [spec.columns || [], ...spec.rows].map((r) => r.map(esc).join(",")).join("\n");
+    }
+
+    const labels = labelsOf(spec);
+    const series = seriesOf(spec);
+    const header = [spec.label || "Category", ...series.map((s) => s.name)];
+    const body = labels.map((label, i) => [label, ...series.map((s) => s.values[i] ?? "")]);
+    return [header, ...body].map((r) => r.map(esc).join(",")).join("\n");
+  }
+
   function renderChart(container, spec, opts = {}) {
     container.innerHTML = "";
     if (!spec) return;
 
     const width = opts.width || container.clientWidth || 320;
-    const height = opts.height || Math.round(width * 0.66);
+    const maxHeight = opts.maxHeight || 2000;
 
-    const type = RENDERERS[spec.type] ? spec.type : "bar";
+    let type = RENDERERS[spec.type] ? spec.type : "bar";
     const labels = labelsOf(spec);
     const hasSeries = Array.isArray(spec.series) && spec.series.length;
     const hasValues = Array.isArray(spec.values || spec.data) && (spec.values || spec.data).length;
@@ -640,8 +695,20 @@
 
     if (type !== "card" && !tableHasRows && (!labels.length || (!hasValues && !hasSeries))) return;
 
+    // A column chart whose bands have collapsed is not a column chart any
+    // more. Horizontal bars have room for as many categories as they need.
+    if (type === "column" && labels.length && width / labels.length < 26) type = "bar";
+
+    const height = ChartGeometry.heightFor(type, labels.length || 1, width, maxHeight);
     RENDERERS[type](container, { ...spec, labels }, width, height);
+
+    if (spec.truncated) {
+      d3.select(container)
+        .append("div")
+        .attr("class", "ibcs-note")
+        .text(`Top ${spec.truncated.shown} of ${spec.truncated.total}`);
+    }
   }
 
-  window.PortalCharts = { renderChart };
+  window.PortalCharts = { renderChart, toCsv };
 })();

@@ -572,6 +572,13 @@ button {
   margin-bottom: 0.35rem;
 }
 
+.ibcs-note {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
 .ibcs-legend {
   display: flex;
   flex-wrap: wrap;
