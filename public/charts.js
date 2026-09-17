@@ -706,6 +706,13 @@
       return [spec.columns || [], ...spec.rows].map((r) => r.map(esc).join(",")).join("\n");
     }
 
+    // A card has one figure and no categories, so the body loop below would
+    // run zero times and the download would be a header with nothing under it.
+    const cardValues = spec.values || spec.data;
+    if (!labelsOf(spec).length && Array.isArray(cardValues) && cardValues.length) {
+      return [[spec.label || "Value"], [cardValues[0]]].map((r) => r.map(esc).join(",")).join("\n");
+    }
+
     // When the chart truncated the categories for readability, the server
     // sends the full set separately under `full` -- the CSV reads from that
     // instead of the (deliberately shortened) display labels/values.
@@ -723,11 +730,16 @@
     const width = opts.width || container.clientWidth || 320;
     const maxHeight = opts.maxHeight || 2000;
 
-    let type = RENDERERS[spec.type] ? spec.type : "bar";
-    const labels = labelsOf(spec);
-    const hasSeries = Array.isArray(spec.series) && spec.series.length;
-    const hasValues = Array.isArray(spec.values || spec.data) && (spec.values || spec.data).length;
-    const tableHasRows = type === "table" && Array.isArray(spec.rows) && spec.rows.length;
+    // The type switcher swaps only spec.type, so the spec reaching here may
+    // still be shaped for the type it was built as. Reconcile the two first.
+    const shaped = ChartShape.deriveRenderable(spec, RENDERERS[spec.type] ? spec.type : "bar");
+
+    let type = shaped.type;
+    const labels = labelsOf(shaped);
+    const hasSeries = Array.isArray(shaped.series) && shaped.series.length;
+    const hasValues =
+      Array.isArray(shaped.values || shaped.data) && (shaped.values || shaped.data).length;
+    const tableHasRows = type === "table" && Array.isArray(shaped.rows) && shaped.rows.length;
 
     if (type !== "card" && !tableHasRows && (!labels.length || (!hasValues && !hasSeries))) return;
 
@@ -736,13 +748,13 @@
     if (type === "column" && labels.length && width / labels.length < 26) type = "bar";
 
     const height = ChartGeometry.heightFor(type, labels.length || 1, width, maxHeight);
-    RENDERERS[type](container, { ...spec, labels }, width, height);
+    RENDERERS[type](container, { ...shaped, labels }, width, height);
 
-    if (spec.truncated) {
+    if (shaped.truncated) {
       d3.select(container)
         .append("div")
         .attr("class", "ibcs-note")
-        .text(`Top ${spec.truncated.shown} of ${spec.truncated.total}`);
+        .text(`Top ${shaped.truncated.shown} of ${shaped.truncated.total}`);
     }
   }
 

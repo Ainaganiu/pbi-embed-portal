@@ -439,8 +439,12 @@
     if (currentReportId) {
       try { localStorage.removeItem(historyKey(currentReportId)); } catch { /* ignore */ }
       // Clearing brings the empty state back, and a report reached only
-      // through history at select time never got its starters fetched.
-      loadStarters(currentReportId);
+      // through history at select time never got its starters fetched. The
+      // hasChat check is repeated rather than inherited from the hidden
+      // toolbar: this reaches an unauthenticated LLM endpoint, so the guard
+      // should not depend on the DOM happening to be in the right state.
+      const report = reports.find((r) => r.id === currentReportId);
+      if (report?.hasChat) loadStarters(currentReportId);
     }
     resetChatLog();
   }
