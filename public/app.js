@@ -24,6 +24,11 @@
   let currentReportId = null;
   let embeddedReport = null; // powerbi-client Report, for reading live state
 
+  // A ceiling on an in-panel chart, not its height: the renderer sizes from
+  // the content, and this only stops a long category list from filling the
+  // whole log. Shared so the first draw and a resize redraw agree.
+  const CHART_MAX_HEIGHT = 520;
+
   // ---------- tiny helpers ----------
 
   function escapeHtml(str) {
@@ -42,93 +47,9 @@
 
   const models = () => window["powerbi-client"].models;
 
-  // Routing between the two paths. An explicit reference to what's on screen
-  // ("this page", "the dashboard") is treated as decisive, because the user is
-  // telling us they mean the current view even if they also use a data word
-  // like "trend". Otherwise an open-ended ask goes visual, a measurable one
-  // goes to the query pipeline. Genuinely ambiguous short asks prefer the
-  // visual path: describing the wrong thing is cheaper to recover from than
-  // quoting a confidently wrong number.
-  const SCREEN_REFERENCE = /\b(this|these|current|currently|on screen|on-screen|this page|the page|the dashboard|the report|the view|here)\b/i;
-  const OPEN_ENDED = /\b(summar|overview|walk me through|what am i looking at|explain|interpret|insight|stand out|standing out|notable|going on|tell me about)/i;
-  const SPECIFIC_QUESTION = /\b(how many|how much|total|count|sum|average|top \d+|bottom \d+|compare|by (year|month|quarter|region|category|channel|publisher|genre))\b/i;
-
-  // Building or fixing something in Power BI, rather than asking about the
-  // data. Checked first: 'how do I write a measure for total sales by game'
-  // names a visual and mentions a measure, but it's a authoring request.
-  const AUTHORING = /\b(how (do|would) i|how to)\b.*\b(write|create|build|add|make|calculate|fix|debug)\b|\b(dax|measure|calculated column|calculated table|star schema|relationship|power query|m code|time intelligence)\b|\b(why (is|does|isn.t)|what.s wrong with)\b.*\b(measure|dax|formula|calculation)\b/i;
-
-  function isAuthoringQuestion(q) {
-    return AUTHORING.test(q);
-  }
-
-  function isVisualQuestion(q) {
-    if (SCREEN_REFERENCE.test(q)) return true;
-    // Naming a chart that's on the page is a stronger signal than any keyword:
-    // the user is pointing at something in front of them, so answer from it
-    // rather than re-querying the model and ignoring their slicers.
-    if (matchVisual(q)) return true;
-    if (OPEN_ENDED.test(q)) return !SPECIFIC_QUESTION.test(q);
-    if (SPECIFIC_QUESTION.test(q)) return false;
-    return q.trim().split(/\s+/).length <= 6;
-  }
-
   const DECORATIVE = ["shape", "image", "textbox", "actionButton", "basicShape"];
 
-  // Titles of the visuals on the page the user is currently looking at. Kept
-  // warm so routing can consider them: getVisuals() measures at ~18ms, and the
-  // router has to decide a path before capture would otherwise have run.
-  let currentVisualTitles = [];
-
-  async function refreshVisualTitles() {
-    try {
-      const pages = await embeddedReport.getPages();
-      const page = pages.find((p) => p.isActive) || pages[0];
-      const visuals = await page.getVisuals();
-      currentVisualTitles = visuals
-        .filter((v) => !DECORATIVE.includes(v.type))
-        .map((v) => ({ name: v.name, title: v.title || v.name, type: v.type }));
-    } catch {
-      currentVisualTitles = []; // routing falls back to keywords alone
-    }
-  }
-
-  // Words that carry no identifying weight when matching a question against a
-  // visual's title.
-  const TITLE_STOPWORDS = new Set(["by", "of", "the", "and", "per", "a", "an", "in", "for", "vs"]);
-
-  function titleWords(title) {
-    return String(title)
-      .toLowerCase()
-      .split(/[^a-z0-9%]+/)
-      .filter((w) => w && !TITLE_STOPWORDS.has(w));
-  }
-
-  // Which on-screen visual, if any, the question is about. Used twice: to route
-  // the question to the visual path at all, and to decide which visual to read
-  // in depth. Requires most of the title's distinctive words to be present, so
-  // "total sales by game" matches "Total Sales by Game" while "sales trend
-  // since 2019" does not.
-  function matchVisual(question) {
-    const q = question.toLowerCase();
-    let best = null;
-
-    for (const v of currentVisualTitles) {
-      const words = titleWords(v.title);
-      if (words.length === 0) continue;
-      const hits = words.filter((w) => q.includes(w)).length;
-      const score = hits / words.length;
-      // A single-word title is too weak a signal on its own ("Region" would
-      // match almost any question mentioning regions).
-      if (words.length < 2) continue;
-      if (score >= 0.7 && (!best || score > best.score || words.length > best.words)) {
-        best = { name: v.name, title: v.title, score, words: words.length };
-      }
-    }
-    return best;
-  }
-
-  async function captureReportState(focusName) {
+  async function captureReportState() {
     if (!embeddedReport) throw new Error("The report isn't loaded yet.");
 
     const pages = await embeddedReport.getPages();
@@ -154,9 +75,9 @@
 
     state.visuals = await Promise.all(
       interesting.map(async (v) => {
-        const isFocus = Boolean(focusName) && v.name === focusName;
-        const entry = { title: v.title || v.name, type: v.type };
-        if (isFocus) entry.focus = true;
+        // The id travels so the router can name the visual a question is
+        // about; the browser no longer decides that.
+        const entry = { name: v.name, title: v.title || v.name, type: v.type };
 
         // A visual can carry its own filter on top of page/report ones, which
         // changes what its numbers actually mean.
@@ -201,12 +122,12 @@
 
     // Re-render at the larger size rather than scaling the small SVG, so
     // text and strokes stay crisp.
+    // A ceiling, not a height: a long category list is allowed to grow into
+    // the modal's scrollable body rather than being squashed into one screen,
+    // but it must not inherit the renderer's 2000px default either.
     const width = Math.min(1100, Math.round(window.innerWidth * 0.86));
-    const height = Math.min(
-      Math.round(window.innerHeight * 0.68),
-      spec.type === "card" ? 260 : Math.round(width * 0.5)
-    );
-    window.PortalCharts.renderChart(chartModalBody, spec, { width, height });
+    const maxHeight = Math.max(260, Math.round(window.innerHeight * 0.68));
+    window.PortalCharts.renderChart(chartModalBody, spec, { width, maxHeight });
     document.getElementById("chart-modal-close").focus();
   }
 
@@ -352,11 +273,6 @@
       });
 
       embeddedReport = embedded;
-      currentVisualTitles = [];
-      embedded.off("rendered");
-      embedded.on("rendered", refreshVisualTitles);
-      embedded.off("pageChanged");
-      embedded.on("pageChanged", refreshVisualTitles);
       embedded.off("error");
       embedded.on("error", () => {
         setReportState(`<p>This report's embed token has expired. Reload the page to keep viewing it — this MVP doesn't auto-refresh tokens.</p>`);
@@ -823,10 +739,10 @@
       // Size from the chat log rather than the bubble, which is content-sized.
       const available = (chatLog.clientWidth || 360) - 56;
       const width = Math.max(240, available);
-      window.PortalCharts.renderChart(canvasHost, chart, {
-        width,
-        height: chart.type === "card" ? 120 : Math.round(Math.min(width * 0.72, 260)),
-      });
+      // The spec rides on the element so a resize can redraw it without
+      // re-asking the model.
+      figure.__spec = chart;
+      window.PortalCharts.renderChart(canvasHost, chart, { width, maxHeight: CHART_MAX_HEIGHT });
     }
 
     // Last, under everything else — a clarifying question is already asking
@@ -836,18 +752,31 @@
     chatLog.scrollTop = chatLog.scrollHeight;
   }
 
-  function renderErrorRow(row, message, onRetry) {
+  // The server describes a failure as a sentence plus what to do about it, so
+  // the headline stays readable and the raw text only shows if it is asked
+  // for. A failure the server calls unrecoverable offers no retry — the button
+  // would only spend the user's time confirming the same answer.
+  function renderErrorRow(row, err, onRetry) {
     const bubble = ensureBubble(row);
     bubble.classList.add("error");
-    bubble.innerHTML = `<div class="error-text">${escapeHtml(message)}</div>
-      <button type="button" class="retry-btn">
+    const hint = err.hint ? `<div class="error-hint">${escapeHtml(err.hint)}</div>` : "";
+    const details = err.details && err.details !== err.message
+      ? `<details class="error-details"><summary>Details</summary><pre>${escapeHtml(err.details)}</pre></details>`
+      : "";
+    const dax = err.dax ? `<pre class="error-dax">${escapeHtml(err.dax)}</pre>` : "";
+    bubble.innerHTML =
+      `<div class="error-text">${escapeHtml(err.message)}</div>${hint}${dax}${details}` +
+      (err.retryable === false
+        ? ""
+        : `<button type="button" class="retry-btn">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M4 4v6h6M20 20v-6h-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="M5.5 15a8 8 0 0 0 14-3M18.5 9a8 8 0 0 0-14 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
         </svg>
         Retry
-      </button>`;
-    bubble.querySelector(".retry-btn").addEventListener("click", onRetry);
+      </button>`);
+    const retry = bubble.querySelector(".retry-btn");
+    if (retry) retry.addEventListener("click", onRetry);
     chatLog.scrollTop = chatLog.scrollHeight;
   }
 
@@ -858,24 +787,25 @@
       `<span class="typing-dots"><span></span><span></span><span></span></span></div>`;
   }
 
-  // Reads the SSE stream from /api/chat/visual, painting text into the bubble
-  // as it arrives. Falls back to a plain JSON response if the server chose not
-  // to stream (a provider without streaming support).
-  async function streamVisualAnswer(row, payload) {
-    const res = await fetch("/api/chat/visual", {
+  // Reads the SSE stream from /api/chat, painting text into the bubble as it
+  // arrives. There is one endpoint now, and it always streams — a response
+  // that isn't an event stream is the server refusing the request, so it is
+  // read as an error rather than as an answer.
+  async function streamAnswer(row, payload, signal) {
+    const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal,
     });
 
     if (!res.headers.get("content-type")?.includes("text/event-stream")) {
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
-      return data;
+      throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { hint: null });
     }
 
-    // Reassigned if the server escalates mid-stream: setThinking rebuilds the
-    // bubble to show the new stage, so these can't be const.
+    // Reassigned if the pipeline changes course mid-stream: setThinking
+    // rebuilds the bubble to show the new stage, so these can't be const.
     let bubble = ensureBubble(row);
     bubble.innerHTML = "";
     let streamEl = document.createElement("div");
@@ -901,11 +831,19 @@
         let msg;
         try { msg = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
-        if (msg.error) throw new Error(msg.error);
-        if (msg.stage === "querying") {
-          // The page could not answer it; the model is being queried.
-          streamEl.innerHTML = "";
-          setThinking(row, "Querying the model…");
+        if (msg.error) {
+          throw Object.assign(new Error(msg.error.message), {
+            hint: msg.error.hint,
+            details: msg.error.details,
+            retryable: msg.error.retryable,
+            dax: msg.error.dax,
+          });
+        }
+        if (msg.stage) {
+          // A stage after text has begun means the pipeline changed course —
+          // rebuild the bubble so the new stage shows rather than sitting
+          // under a half-written answer.
+          setThinking(row, STAGE_LABELS[msg.stage] || null);
           bubble = ensureBubble(row);
           streamEl = document.createElement("div");
           bubble.appendChild(streamEl);
@@ -935,53 +873,85 @@
       clarify: final.clarify,
       followUps: final.followUps,
       visualContext: final.visualContext,
+      dax: final.dax,
+      authoring: final.route === "authoring",
+      validation: final.validation,
     };
   }
 
+  // The server's stage vocabulary, said in the user's terms. An unnamed stage
+  // falls back to the bare typing dots rather than showing a raw token.
+  const STAGE_LABELS = {
+    routing: "Working out how to answer this…",
+    reading: "Reading the current view…",
+    writing_query: "Writing the query…",
+    running_query: "Running it against the model…",
+    retrying_query: "Adjusting the query…",
+    escalating: "The page can't answer that — querying the model…",
+    validating: "Checking it runs against your model…",
+    composing: "Writing it up…",
+  };
+
+  // The request in flight, so the stop button can cancel it.
+  let inFlight = null;
+
   async function runAnswer(row, question) {
-    // Authoring is checked first: "how do I write a measure for total sales by
-    // game" names a visual and sounds like a data question, but the user wants
-    // to build something, not be told a number.
-    const authoring = isAuthoringQuestion(question);
-    const visual = !authoring && isVisualQuestion(question);
-    setThinking(
-      row,
-      authoring ? "Working it out…" : visual ? "Reading the current view…" : null
-    );
+    setThinking(row, STAGE_LABELS.routing);
+
+    // Every question now carries the view: the server decides whether it
+    // matters, so the browser no longer has to guess which questions are
+    // about what is on screen.
+    let state;
+    try {
+      state = await captureReportState();
+    } catch (err) {
+      // Couldn't read the visuals — send whatever page metadata we do have
+      // rather than failing the question outright.
+      state = { captureError: err.message, visuals: [] };
+    }
+
+    const controller = new AbortController();
+    inFlight = controller;
+    setSending(true);
 
     try {
-      let result;
-      if (authoring) {
-        result = await fetchJson("/api/chat/authoring", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reportId: currentReportId, question, history: historyForModel() }),
-        });
-      } else if (visual) {
-        const focus = matchVisual(question);
-        let state;
-        try {
-          state = await captureReportState(focus && focus.name);
-        } catch (err) {
-          // Couldn't read the visuals — fall back to whatever page/filter
-          // metadata we do have rather than failing the question outright.
-          state = { captureError: err.message, visuals: [] };
-        }
-        result = await streamVisualAnswer(row, { reportId: currentReportId, question, state, history: historyForModel() });
-      } else {
-        result = await fetchJson("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reportId: currentReportId, question, history: historyForModel() }),
-        });
-      }
+      const result = await streamAnswer(row, {
+        reportId: currentReportId,
+        question,
+        state,
+        history: historyForModel(),
+      }, controller.signal);
       renderAnswerRow(row, result);
       history.push({ q: question, result });
       saveHistory();
     } catch (err) {
-      renderErrorRow(row, err.message, () => runAnswer(row, question));
+      if (err.name === "AbortError") {
+        // The user asked for this to stop, so a failed row would be reporting
+        // their own decision back to them as a problem.
+        row.remove();
+        return;
+      }
+      renderErrorRow(row, err, () => runAnswer(row, question));
+    } finally {
+      inFlight = null;
+      setSending(false);
     }
   }
+
+  function setSending(sending) {
+    chatSend.classList.toggle("sending", sending);
+    chatSend.setAttribute("aria-label", sending ? "Stop" : "Send");
+    chatSend.title = sending ? "Stop" : "Send";
+  }
+
+  chatSend.addEventListener("click", (e) => {
+    // While a request is in flight this button stops it rather than
+    // submitting. Aborting the fetch closes the connection, which is what
+    // tells the server to stop spending on provider calls.
+    if (!inFlight) return;
+    e.preventDefault();
+    inFlight.abort();
+  });
 
   // The question a clarification is about, so answering the chips can resend
   // the original rather than depending on the transcript still being there.
@@ -1030,6 +1000,23 @@
       // Branding is cosmetic — fall back to defaults silently.
     }
   }
+
+  // A chart used to keep the width it was born at, so dragging the panel
+  // wider left it stranded at its old size.
+  let resizeTimer = null;
+  new ResizeObserver(() => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const width = Math.max(240, (chatLog.clientWidth || 360) - 56);
+      chatLog.querySelectorAll(".chat-chart").forEach((figure) => {
+        if (!figure.__spec) return;
+        window.PortalCharts.renderChart(figure.querySelector(".chart-host"), figure.__spec, {
+          width,
+          maxHeight: CHART_MAX_HEIGHT,
+        });
+      });
+    }, 120);
+  }).observe(chatLog);
 
   // ---------- boot ----------
 

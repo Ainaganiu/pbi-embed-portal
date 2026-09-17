@@ -693,6 +693,29 @@ button {
   word-break: break-word;
 }
 
+.error-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.error-details {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.error-details pre {
+  white-space: pre-wrap;
+  margin: 4px 0 0;
+}
+
+.error-dax {
+  margin-top: 6px;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
 .retry-btn {
   margin-top: 0.5rem;
   display: inline-flex;
@@ -757,6 +780,20 @@ button {
 
 #chat-send:active {
   transform: scale(0.95);
+}
+
+/* While a request is in flight the send arrow becomes a stop square, so the
+   one button in reach is always the one that does what is next. */
+#chat-send.sending svg {
+  display: none;
+}
+
+#chat-send.sending::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: currentColor;
 }
 
 #chat-send:disabled {
