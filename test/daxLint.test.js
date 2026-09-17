@@ -113,3 +113,38 @@ test("a question naming no period raises nothing", () => {
     []
   );
 });
+
+test("a breakdown question answered with raw row-level detail is caught", () => {
+  // Asked for a breakdown, the model returned one row per transaction
+  // instead of one row per genre -- the exact failure pattern grouping is
+  // meant to catch, even though the query runs and even returns real data.
+  const issues = groundingIssues("sales by genre", `EVALUATE 'Data'`);
+  assert.match(issues.join(" "), /group|aggregat/i);
+});
+
+test("a top-N question over a raw table, with no grouping, is caught", () => {
+  const issues = groundingIssues("top 10 genres by revenue", `EVALUATE TOPN(10, 'Data', 'Data'[Sales])`);
+  assert.match(issues.join(" "), /group|aggregat/i);
+});
+
+test("a comparison question with no grouping is caught", () => {
+  const issues = groundingIssues("compare genre sales this year and last", `EVALUATE 'Data'`);
+  assert.match(issues.join(" "), /group|aggregat/i);
+});
+
+test("the same breakdown question raises nothing once the query actually groups", () => {
+  assert.deepEqual(
+    groundingIssues("sales by genre", `EVALUATE SUMMARIZECOLUMNS('Data'[Genre], "Sales", [Total Sales])`),
+    []
+  );
+});
+
+test("a question with no breakdown language raises nothing even over a raw table", () => {
+  // "What is total sales" needs no per-category grouping at all.
+  assert.deepEqual(groundingIssues("what is total sales", `EVALUATE ROW("Total", [Total Sales])`), []);
+});
+
+test("'by' followed by a number is not mistaken for a breakdown dimension", () => {
+  // "grew by 5%" names no category to group by.
+  assert.deepEqual(groundingIssues("how much did sales grow by 5%", `EVALUATE ROW("Delta", [Delta])`), []);
+});
