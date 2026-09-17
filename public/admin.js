@@ -236,6 +236,8 @@
     $("report-dataset-id").value = editing ? report.datasetId || "" : "";
     $("report-schema").value = editing ? report.schemaDescription || "" : "";
     $("report-problem").value = editing ? report.problemStatement || "" : "";
+    $("report-measures").value = editing ? report.measuresDescription || "" : "";
+    $("report-columns").value = editing ? report.columnsDescription || "" : "";
     $("report-id").focus();
     resetBrowsePicker();
     loadWorkspaces();
@@ -346,6 +348,8 @@
       datasetId: $("report-dataset-id").value.trim() || null,
       schemaDescription: $("report-schema").value.trim() || null,
       problemStatement: $("report-problem").value.trim() || null,
+      measuresDescription: $("report-measures").value.trim() || null,
+      columnsDescription: $("report-columns").value.trim() || null,
     };
 
     try {

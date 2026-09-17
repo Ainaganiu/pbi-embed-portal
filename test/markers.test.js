@@ -9,7 +9,36 @@ const {
   splitFollowUps,
   emitSafe,
   confirmsPreviousTurn,
+  schemaContext,
 } = require("../lib/chatHelpers");
+
+test("schemaContext with only a schema description returns it unchanged", () => {
+  const got = schemaContext({ schemaDescription: "Data[Genre], [Sales]" });
+  assert.equal(got, "Data[Genre], [Sales]");
+});
+
+test("schemaContext labels measures and columns as their own sections", () => {
+  const got = schemaContext({
+    schemaDescription: "Data[Genre], [Sales]",
+    measuresDescription: "[Sales] is total revenue net of returns.",
+    columnsDescription: "Data[Genre] is one of six fixed values.",
+  });
+  assert.match(got, /Data\[Genre\], \[Sales\]/);
+  assert.match(got, /Measure definitions:\n\[Sales\] is total revenue/);
+  assert.match(got, /Column definitions:\nData\[Genre\] is one of six/);
+});
+
+test("schemaContext omits a section that was never filled in", () => {
+  const got = schemaContext({
+    schemaDescription: "Data[Genre], [Sales]",
+    measuresDescription: "[Sales] is total revenue net of returns.",
+  });
+  assert.ok(!got.includes("Column definitions:"));
+});
+
+test("schemaContext with nothing at all falls back to the existing placeholder", () => {
+  assert.equal(schemaContext({}), "(not described)");
+});
 
 // The failure these exist for: the model explains itself, THEN emits the
 // marker. Under first-line-only detection the whole reply fell through as

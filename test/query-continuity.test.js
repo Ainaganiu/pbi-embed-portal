@@ -22,6 +22,12 @@ stub("lib/powerbi", {
 });
 
 const query = require(path.join(ROOT, "lib/answer/query.js"));
+const llmCache = require(path.join(ROOT, "lib/llmCache.js"));
+
+// Caching now applies broadly, so tests sharing a (report, question, history)
+// key would otherwise see each other's cached result instead of exercising
+// the pipeline again.
+test.beforeEach(() => llmCache.clear());
 
 function providerRecording(daxReply) {
   const calls = [];
@@ -39,9 +45,15 @@ function providerRecording(daxReply) {
   };
 }
 
-function ctx(provider, history) {
+function ctx(provider, history, reportOverrides) {
   return {
-    report: { id: "r-continuity", workspaceId: "w", datasetId: "d", schemaDescription: "s" },
+    report: {
+      id: "r-continuity",
+      workspaceId: "w",
+      datasetId: "d",
+      schemaDescription: "s",
+      ...reportOverrides,
+    },
     settings: {},
     provider,
     // No year or other grounding trigger, so exactly one DAX call precedes
@@ -71,6 +83,23 @@ test("the composing call carries prior turns, same as the other two pipelines", 
     composingCall.messages.some((m) => m.role === "assistant" && m.content === "Action led with 1,200."),
     "the composing call must see what the previous turn actually said"
   );
+});
+
+test("the composing call's prompt is grounded in the report's own schema, measures and columns", async () => {
+  const provider = providerRecording("EVALUATE Sales");
+  await query.run(
+    ctx(provider, [], {
+      schemaDescription: "Data[Genre], [Sales]",
+      measuresDescription: "[Sales] is net revenue.",
+      columnsDescription: "Data[Genre] has six fixed values.",
+    }),
+    () => {}
+  );
+
+  const composingCall = composingCallFrom(provider.calls);
+  assert.match(composingCall.system, /Ground everything you say in the semantic model/i);
+  assert.match(composingCall.system, /\[Sales\] is net revenue\./);
+  assert.match(composingCall.system, /Data\[Genre\] has six fixed values\./);
 });
 
 test("a standalone question with no history sends just the current turn", async () => {

@@ -187,6 +187,15 @@
           <label for="report-schema">Data description for AI (optional — needed for chat)</label>
           <textarea id="report-schema" rows="6" placeholder="Describe this dashboard's tables, columns, and measures so the AI can write accurate DAX for it."></textarea>
         </div>
+        <div class="field">
+          <label for="report-measures">Measure descriptions (optional)</label>
+          <textarea id="report-measures" rows="5" placeholder="Paste what each measure actually means — its formula in plain terms, whether it's a percentage or a raw count, and anything about it that isn't obvious from the name."></textarea>
+          <div class="hint">Focused metadata for measures specifically — separate from the general schema above, so it can be labelled for the AI on its own.</div>
+        </div>
+        <div class="field">
+          <label for="report-columns">Column descriptions (optional)</label>
+          <textarea id="report-columns" rows="5" placeholder="Paste what each column holds — allowed values, units, how it relates to other tables — anything a data dictionary would say."></textarea>
+        </div>
         <div class="report-editor-actions">
           <button class="btn-primary" id="save-report" style="width:auto;">Save report</button>
           <button class="btn-secondary" id="cancel-report-edit">Cancel</button>
