@@ -706,8 +706,11 @@
       return [spec.columns || [], ...spec.rows].map((r) => r.map(esc).join(",")).join("\n");
     }
 
-    const labels = labelsOf(spec);
-    const series = seriesOf(spec);
+    // When the chart truncated the categories for readability, the server
+    // sends the full set separately under `full` -- the CSV reads from that
+    // instead of the (deliberately shortened) display labels/values.
+    const labels = spec.full ? spec.full.labels : labelsOf(spec);
+    const series = spec.full ? [{ name: spec.label || "Value", values: spec.full.values }] : seriesOf(spec);
     const header = [spec.label || "Category", ...series.map((s) => s.name)];
     const body = labels.map((label, i) => [label, ...series.map((s) => s.values[i] ?? "")]);
     return [header, ...body].map((r) => r.map(esc).join(",")).join("\n");

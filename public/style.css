@@ -510,9 +510,6 @@ button {
 }
 
 .chart-enlarge {
-  position: absolute;
-  top: 0;
-  right: 0;
   z-index: 1;
   display: flex;
   align-items: center;
@@ -523,19 +520,36 @@ button {
   background: var(--surface);
   color: var(--text-faint);
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.chat-chart:hover .chart-enlarge,
-.chart-enlarge:focus-visible {
-  opacity: 1;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 
 .chart-enlarge:hover {
   color: var(--accent);
   border-color: var(--accent);
 }
+
+.chart-tools {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.chat-chart:hover .chart-tools,
+.chart-tools:focus-within { opacity: 1; }
+.chart-tool, .chart-type {
+  font-size: 10px;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.chart-tool:hover, .chart-type:hover { color: var(--text); }
 
 /* IBCS chart typography. No gridline styles here by design — the standard
    removes gridlines rather than styling them, and the renderers draw a single

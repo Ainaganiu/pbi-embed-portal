@@ -108,6 +108,43 @@
     return state;
   }
 
+  // ---------- chart downloads ----------
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // The SVG is serialised and painted onto a canvas rather than screenshotted:
+  // the chart is vector, so this is the only way to get a clean raster of it
+  // without a dependency. At 2x so it stays sharp when pasted into a deck.
+  function exportPng(host, label) {
+    const svg = host.querySelector("svg");
+    if (!svg) return;
+    const scale = 2;
+    const width = +svg.getAttribute("width");
+    const height = +svg.getAttribute("height");
+    const source = new XMLSerializer().serializeToString(svg);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = width * scale;
+      canvas.height = height * scale;
+      const ctx2d = canvas.getContext("2d");
+      ctx2d.fillStyle = "#ffffff";
+      ctx2d.fillRect(0, 0, canvas.width, canvas.height);
+      ctx2d.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (blob) downloadBlob(blob, `${label.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.png`);
+      });
+    };
+    img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(source)));
+  }
+
   // ---------- enlarge modal ----------
 
   const chartModal = document.getElementById("chart-modal");
@@ -732,7 +769,58 @@
       const canvasHost = document.createElement("div");
       canvasHost.className = "chart-host";
 
-      figure.appendChild(enlarge);
+      const tools = document.createElement("div");
+      tools.className = "chart-tools";
+
+      const redraw = () => {
+        const width = Math.max(240, (chatLog.clientWidth || 360) - 56);
+        window.PortalCharts.renderChart(canvasHost, figure.__spec, { width, maxHeight: CHART_MAX_HEIGHT });
+      };
+
+      // Only the forms these rows can honestly take. A line over unordered
+      // categories would imply an order that isn't there.
+      const types = Array.isArray(chart.validTypes) ? chart.validTypes : [];
+      if (types.length > 1) {
+        const select = document.createElement("select");
+        select.className = "chart-type";
+        select.title = "Chart type";
+        types.forEach((t) => {
+          const option = document.createElement("option");
+          option.value = t;
+          option.textContent = t;
+          option.selected = t === chart.type;
+          select.appendChild(option);
+        });
+        select.addEventListener("change", () => {
+          figure.__spec = { ...figure.__spec, type: select.value };
+          redraw();
+        });
+        tools.appendChild(select);
+      }
+
+      const csv = document.createElement("button");
+      csv.type = "button";
+      csv.className = "chart-tool";
+      csv.textContent = "CSV";
+      csv.title = "Download the data";
+      csv.addEventListener("click", () => {
+        downloadBlob(
+          new Blob([window.PortalCharts.toCsv(figure.__spec)], { type: "text/csv" }),
+          `${(chart.label || "chart").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.csv`
+        );
+      });
+      tools.appendChild(csv);
+
+      const png = document.createElement("button");
+      png.type = "button";
+      png.className = "chart-tool";
+      png.textContent = "PNG";
+      png.title = "Download the chart";
+      png.addEventListener("click", () => exportPng(canvasHost, chart.label || "chart"));
+      tools.appendChild(png);
+
+      tools.appendChild(enlarge); // the existing enlarge button, unchanged
+      figure.appendChild(tools);
       figure.appendChild(canvasHost);
       bubble.appendChild(figure);
 

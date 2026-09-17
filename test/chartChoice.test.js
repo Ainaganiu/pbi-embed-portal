@@ -212,6 +212,26 @@ test("too many categories are truncated to the top slice, largest first", () => 
   assert.ok(spec.values[0] >= spec.values[14], "sorted descending");
 });
 
+test("a truncated chart still carries every category under `full`, for CSV", () => {
+  const extras = Array.from({ length: 10 }, (_, i) => ({ "Data[Genre]": `Extra ${i}`, "[Sales]": 100 + i }));
+  const rows = genres(14).concat(extras);
+  const spec = buildChartSpec("sales by genre", rows);
+
+  // The chart itself still only shows the top slice.
+  assert.equal(spec.labels.length, 15);
+  assert.equal(spec.values.length, 15);
+
+  // But `full` holds every category the query actually returned, unsorted
+  // and untruncated -- this is what a CSV download must read from.
+  assert.ok(spec.full, "truncated spec carries a full pairing");
+  assert.equal(spec.full.labels.length, 24);
+  assert.equal(spec.full.values.length, 24);
+  const expectedLabels = rows.map((r) => r["Data[Genre]"]);
+  assert.deepEqual(spec.full.labels, expectedLabels);
+  const expectedValues = rows.map((r) => r["[Sales]"]);
+  assert.deepEqual(spec.full.values, expectedValues);
+});
+
 test("a set under the threshold keeps its original order and is not marked truncated", () => {
   const spec = buildChartSpec("sales by genre", genres(10));
   assert.equal(spec.labels.length, 10);
