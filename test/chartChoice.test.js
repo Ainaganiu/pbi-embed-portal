@@ -50,18 +50,18 @@ test("many categories force a bar so the labels fit", () => {
   assert.equal(got.fixed, true);
 });
 
-test("a share question over few categories is a donut", () => {
-  const got = chooseChartType("what is the split of sales by region", genres(4));
+test("a share intent over few categories is a donut", () => {
+  const got = chooseChartType("what is the split of sales by region", genres(4), "share");
   assert.equal(got.type, "donut");
 });
 
-test("a share question over many categories is not a donut", () => {
-  const got = chooseChartType("what is the split of sales by genre", genres(10));
+test("a share intent over many categories is not a donut", () => {
+  const got = chooseChartType("what is the split of sales by genre", genres(10), "share");
   assert.notEqual(got.type, "donut");
 });
 
-test("a change question is a variance chart", () => {
-  const got = chooseChartType("how did sales change versus last year by genre", genres(5));
+test("a change intent is a variance chart", () => {
+  const got = chooseChartType("how did sales change versus last year by genre", genres(5), "change");
   assert.equal(got.type, "variance");
 });
 
@@ -171,4 +171,89 @@ test("a single value builds a card", () => {
 test("unchartable rows build nothing", () => {
   assert.equal(buildChartSpec("anything", []), null);
   assert.equal(buildChartSpec("list genres", [{ "Data[Genre]": "Action" }, { "Data[Genre]": "Sports" }]), null);
+});
+
+// ---- intent hints, truncation, and validTypesFor -------------------------
+
+const { validTypesFor } = require("../lib/chartChoice");
+
+test("an explicit share intent beats the question's wording", () => {
+  const got = chooseChartType("break it out for me", genres(4), "share");
+  assert.equal(got.type, "donut");
+});
+
+test("an explicit change intent produces a variance chart", () => {
+  const got = chooseChartType("how did we do", genres(5), "change");
+  assert.equal(got.type, "variance");
+});
+
+test("intent never overrides a shape-determined choice", () => {
+  const got = chooseChartType("what is the split", [{ "[Total]": 42 }], "share");
+  assert.equal(got.type, "card", "one number is a card however the question was framed");
+});
+
+test("intent never puts time on a horizontal axis", () => {
+  const got = chooseChartType("what is the split by year", years(3), "share");
+  assert.equal(got.type, "column");
+});
+
+test("an unknown intent is ignored rather than honoured", () => {
+  const got = chooseChartType("total revenue by genre", genres(6), "sparkline");
+  assert.equal(got.type, "bar");
+});
+
+test("too many categories are truncated to the top slice, largest first", () => {
+  const spec = buildChartSpec("sales by genre", genres(14).concat(
+    Array.from({ length: 10 }, (_, i) => ({ "Data[Genre]": `Extra ${i}`, "[Sales]": 100 + i }))
+  ));
+  assert.equal(spec.labels.length, 15);
+  assert.deepEqual(spec.truncated, { shown: 15, total: 24 });
+  assert.equal(spec.labels[0], "Action", "the largest value leads");
+  assert.ok(spec.values[0] >= spec.values[14], "sorted descending");
+});
+
+test("a set under the threshold keeps its original order and is not marked truncated", () => {
+  const spec = buildChartSpec("sales by genre", genres(10));
+  assert.equal(spec.labels.length, 10);
+  assert.equal(spec.truncated, undefined);
+  assert.equal(spec.labels[0], "Action");
+});
+
+test("a time series is never reordered, however many points it has", () => {
+  const spec = buildChartSpec("sales by year", years(20));
+  assert.equal(spec.labels[0], "2010", "reordering a timeline destroys it");
+  assert.equal(spec.labels.length, 20);
+  assert.equal(spec.truncated, undefined);
+});
+
+test("intent reaches buildChartSpec through options", () => {
+  const spec = buildChartSpec("break it out", genres(4), { intent: "share" });
+  assert.equal(spec.type, "donut");
+});
+
+test("a caption still reaches buildChartSpec through options", () => {
+  const spec = buildChartSpec("sales by genre", genres(4), { caption: "Units shipped" });
+  assert.equal(spec.label, "Units shipped");
+});
+
+test("valid types for categorical rows offer the structural forms, not a line", () => {
+  const types = validTypesFor(genres(6));
+  assert.ok(types.includes("bar"));
+  assert.ok(types.includes("donut"));
+  assert.ok(types.includes("table"));
+  assert.ok(!types.includes("line"), "a line implies an ordered axis these rows do not have");
+});
+
+test("valid types for a time series offer line and column", () => {
+  const types = validTypesFor(years(9));
+  assert.ok(types.includes("line"));
+  assert.ok(types.includes("column"));
+});
+
+test("valid types for a single number are just the card and the table", () => {
+  assert.deepEqual(validTypesFor([{ "[Total]": 42 }]).sort(), ["card", "table"]);
+});
+
+test("rows with nothing numeric offer no chart at all", () => {
+  assert.deepEqual(validTypesFor([{ "Data[Genre]": "Action" }]), []);
 });
