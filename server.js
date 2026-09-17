@@ -13,23 +13,18 @@ const authRouter = require("./routes/auth");
 const adminRouter = require("./routes/admin");
 const authoringRouter = require("./routes/authoring");
 const { CORE_RULES } = require("./lib/daxSkills");
-const { lintDax, groundingIssues } = require("./lib/daxLint");
-const { chooseChartType, buildChartSpec } = require("./lib/chartChoice");
+const { groundingIssues } = require("./lib/daxLint");
+const { chooseChartType } = require("./lib/chartChoice");
 const {
   problemContext,
   sanitizeHistory,
   stripCodeFence,
   parseClarify,
   findClarify,
-  findNeedData,
-  confirmsPreviousTurn,
-  refersToScreenEntities,
-  splitChart,
-  FOLLOW_UP_RULE,
-  splitFollowUps,
-  emitSafe,
 } = require("./lib/chatHelpers");
 const BUDGETS = require("./lib/budgets");
+const screenAnswer = require("./lib/answer/screen");
+const { buildDaxSystemPrompt } = require("./lib/answer/dax");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -119,177 +114,9 @@ app.get("/api/embed-token/:id", async (req, res) => {
 // problemContext, sanitizeHistory and stripCodeFence now live in
 // lib/chatHelpers.js, shared with the authoring route.
 
-// ---------------------------------------------------------------------------
-// Visual-context path: answering "what is this telling me?" about whatever the
-// user currently has on screen.
-//
-// Power BI renders into a cross-origin iframe, so the page's pixels can't be
-// read client-side, and this tenant has report-to-image export disabled. So
-// instead of a screenshot we take the structured state the embed SDK does
-// expose — active page, filters/slicers, and each visual's own exported data —
-// and reason over that. It also means the model sees exact figures rather than
-// numbers recovered from an image.
-// ---------------------------------------------------------------------------
-
-function describeFilters(filters) {
-  if (!Array.isArray(filters) || filters.length === 0) return "none";
-  return filters
-    .map((f) => {
-      const col = f?.target?.column || f?.target?.measure || f?.target?.hierarchy || "filter";
-      const table = f?.target?.table ? `${f.target.table}.` : "";
-      const values = Array.isArray(f.values) ? f.values.join(", ") : f.value ?? "";
-      const op = f.operator || f.conditions?.[0]?.operator || "is";
-      return `${table}${col} ${op} ${values}`.trim();
-    })
-    .join("; ");
-}
-
-// The entities the user can actually see. Without these, a follow-up query for
-// "these games in 2015" would return 2015's own top five — a different question
-// that looks like an answer.
-const MAX_ENTITIES = 25;
-
-function entitiesOnScreen(state) {
-  const visuals = state?.visuals || [];
-  // Prefer the visual the question was about; otherwise the first one with a
-  // categorical first column.
-  const candidates = [...visuals].sort((a, b) => (b.focus ? 1 : 0) - (a.focus ? 1 : 0));
-
-  for (const v of candidates) {
-    if (!v.data || v.type === "slicer") continue;
-    const lines = String(v.data).trim().split(/\r?\n/);
-    if (lines.length < 2) continue;
-
-    const values = lines
-      .slice(1)
-      .map((line) => (line.match(/^("([^"]*)"|[^,]*)/) || [])[0] || "")
-      .map((s) => s.replace(/^"|"$/g, "").trim())
-      .filter((s) => s && !/^-?[\d.,]+$/.test(s)); // skip numeric first columns
-
-    if (values.length >= 2) {
-      return { visualTitle: v.title, header: lines[0].split(",")[0].trim(), values: values.slice(0, MAX_ENTITIES) };
-    }
-  }
-  return null;
-}
-
-function renderReportState(state) {
-  const lines = [];
-  lines.push(`Active page: ${state.pageName || "(unknown)"}`);
-  lines.push(`Report-level filters: ${describeFilters(state.reportFilters)}`);
-  lines.push(`Page-level filters: ${describeFilters(state.pageFilters)}`);
-
-  const visuals = (state.visuals || []).slice(0, BUDGETS.VISUALS_IN_PROMPT);
-  lines.push(`\nVisuals currently on this page (${(state.visuals || []).length}):`);
-
-  visuals.forEach((v, i) => {
-    const focusTag = v.focus ? "   <-- THE VISUAL THE QUESTION IS ABOUT" : "";
-    lines.push(`\n${i + 1}. "${v.title || "(untitled)"}" — ${v.type || "unknown type"}${focusTag}`);
-    if (v.slicerState) lines.push(`   slicer selection: ${v.slicerState}`);
-    if (v.visualFilters) lines.push(`   filters on this visual: ${describeFilters(v.visualFilters)}`);
-    if (v.error) lines.push(`   (data unavailable: ${v.error})`);
-    else if (v.data) {
-      const cap = v.focus ? BUDGETS.CHARS_FOCUSED_VISUAL : BUDGETS.CHARS_PER_VISUAL;
-      lines.push(`   data:\n${String(v.data).slice(0, cap)}`);
-    }
-  });
-
-  if ((state.visuals || []).length > BUDGETS.VISUALS_IN_PROMPT) {
-    lines.push(`\n(${state.visuals.length - BUDGETS.VISUALS_IN_PROMPT} further visuals omitted.)`);
-  }
-  return lines.join("\n").slice(0, BUDGETS.STATE_CHARS);
-}
-
-function buildDaxSystemPrompt(report, opts = {}) {
-  const schemaDescription = report.schemaDescription;
-  return (
-    problemContext(report) +
-    `You are a DAX query generator for a Power BI dataset. Given a question, ` +
-    `return ONLY a single valid DAX query (an EVALUATE statement) that ` +
-    `answers it. No prose, no markdown fences, no explanation.\n\n` +
-    `Rules — these prevent the most common failures:\n` +
-    `- ALWAYS wrap table names in single quotes: 'DataTable'[Column], not ` +
-    `DataTable[Column]. This is required even when the name has no spaces.\n` +
-    `- A boolean filter argument to CALCULATE/CALCULATETABLE must be a simple ` +
-    `comparison on ONE column, e.g. 'T'[Col] = "X". An expression such as ` +
-    `YEAR('T'[Date]) = 2023 is INVALID there — wrap it in FILTER instead: ` +
-    `FILTER('T', YEAR('T'[Date]) = 2023).\n` +
-    `- If the model has a date/calendar dimension table, filter time using ` +
-    `its columns (e.g. 'Date'[Year] = 2023) rather than applying YEAR() to a ` +
-    `fact-table date column.\n` +
-    `- Use only tables, columns and measures named in the schema below. Never ` +
-    `invent names, and match their spelling and capitalisation exactly, ` +
-    `including any numeric or underscore prefixes on measures.\n` +
-    `- Filter values must match the data exactly. If the schema lists the ` +
-    `allowed values for a column, use one of those literally.\n` +
-    `- Prefer existing measures over re-aggregating raw columns.\n\n` +
-    // Escalation from the visual path already knows exactly what it needs, so
-    // a clarifying question there would stall a request the user never sees.
-    (opts.allowClarify === false
-      ? `The request below already states precisely what is needed. Always ` +
-        `return a query — never ask a clarifying question.\n\n`
-      : `Ask before guessing. If the question doesn't identify which measure, ` +
-        `column, filter or time period it means, and picking wrongly would give ` +
-        `a materially different answer, do NOT write a query. Instead reply with ` +
-        `a single line of exactly this shape:\n` +
-        `CLARIFY: {"questions":[{"ask":"<short question>","multi":false,"options":["<option>","<option>"]}]}\n` +
-        `A comparison is the usual case: "compare these" leaves open what to ` +
-        `compare against, on which measure, and over which period. Ask each ` +
-        `open axis as its own question so they can all be answered at once — ` +
-        `at most 3 questions, each with 2 to 6 options.\n` +
-        `Set "multi":true where several answers genuinely make sense together ` +
-        `(which measures to include, which regions to cover) and false where ` +
-        `only one can apply (which axis, which single period). The user ticks ` +
-        `them, so this decides whether they may tick more than one.\n` +
-        `Example: CLARIFY: {"questions":[{"ask":"Compare against what?","multi":false,"options":["The previous year","Other regions","Other genres"]},{"ask":"Which measures should it show?","multi":true,"options":["Total sales","Number of transactions","Year-on-year change"]}]}\n` +
-        `Draw the options from what actually exists in the schema, and word ` +
-        `them in plain business language — never expose raw measure or column ` +
-        `syntax like [1_ Total Interactions] or 'Table'[Column].\n` +
-        `Do not ask when a sensible reading is obvious: a question naming one ` +
-        `measure, or one that clearly means the whole dataset, should just be ` +
-        `answered. Earlier turns in the conversation count as context — if they ` +
-        `already establish the measure or period, use it rather than asking ` +
-        `again.\n` +
-        `Never ask twice. If the question already carries the specifics — ` +
-        `typically after an em dash, e.g. "compare the categories — year over ` +
-        `year, by ticket volume" — those ARE the answers to a question you ` +
-        `already asked. Write the query.\n\n`) +
-    `Dataset schema:\n${schemaDescription}`
-  );
-}
-
-// Shared by the data path and by escalation from the visual path, so both get
-// the same rules, schema grounding and CORE_RULES.
-async function generateDaxFor(report, provider, messages, opts = {}) {
-  const raw = stripCodeFence(
-    await provider.complete({
-      system: buildDaxSystemPrompt(report, opts),
-      messages,
-      // Reasoning models spend completion tokens thinking before emitting
-      // anything; this is a ceiling, not a target.
-      maxTokens: 5000,
-      // Off by default. Turned on only where the query has to line up with
-      // something — the entities on screen, a period named in the question —
-      // and a plausible-looking wrong query would read as an answer.
-      reasoning: opts.reasoning,
-    })
-  );
-
-  // A clarifying question isn't a query, so it must not be rewritten.
-  if (findClarify(raw)) return raw;
-
-  // Repair the SUMMARIZECOLUMNS shapes the model keeps getting wrong even when
-  // shown the engine's own error. Each has one correct rewrite, so fixing them
-  // here saves a failed round trip to Power BI — see lib/daxLint.js.
-  const { dax, notes } = lintDax(raw);
-  if (notes.length) console.error("[dax lint]", notes.join("; "));
-  return dax;
-}
-
+// Temporary: replaced by routes/chat.js in the front-door commit.
 app.post("/api/chat/visual", async (req, res) => {
   const { reportId, question, state } = req.body || {};
-  const priorTurns = sanitizeHistory(req.body && req.body.history);
-
   let settings, report;
   try {
     settings = await getSettings();
@@ -297,12 +124,8 @@ app.post("/api/chat/visual", async (req, res) => {
   } catch (err) {
     return settingsUnavailable(res, err);
   }
-  if (!report) {
-    return res.status(404).json({ error: `Unknown report "${reportId}"` });
-  }
-  if (!question || typeof question !== "string") {
-    return res.status(400).json({ error: "Missing question" });
-  }
+  if (!report) return res.status(404).json({ error: `Unknown report "${reportId}"` });
+  if (!question || typeof question !== "string") return res.status(400).json({ error: "Missing question" });
 
   const provider = getProvider({
     provider: settings.llmProvider,
@@ -310,442 +133,36 @@ app.post("/api/chat/visual", async (req, res) => {
     model: settings.llmModel,
     apiBase: settings.llmApiBase,
   });
-  if (!provider) {
-    return res.status(400).json({ error: `Chat is not enabled for report "${reportId}"` });
-  }
+  if (!provider) return res.status(400).json({ error: `Chat is not enabled for report "${reportId}"` });
 
-  const stateText = renderReportState(state || {});
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  const emit = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
-  const focused = (state?.visuals || []).find((v) => v && v.focus);
-  const visualContext = {
-    pageName: state?.pageName || null,
-    visualCount: (state?.visuals || []).length,
-    focusTitle: focused ? focused.title : null,
-    // Report- and page-level filters both narrow what's on screen, so the
-    // "what was read" line has to account for both.
-    filters: describeFilters([
-      ...(state?.reportFilters || []),
-      ...(state?.pageFilters || []),
-    ]),
-  };
+  let cancelled = false;
+  req.on("close", () => { cancelled = true; });
 
   try {
-    const request = {
-      system:
-        problemContext(report) +
-        `You are an experienced data analyst reviewing a Power BI report on ` +
-        `behalf of a business user who is looking at it right now.\n\n` +
-        `You will be shown the current state of the report page they have ` +
-        `open — the active page, the filters and slicers they have applied, ` +
-        `and each visual on that page together with the data it is currently ` +
-        `displaying — along with their question.\n\n` +
-        `When you respond:\n` +
-        `- Speak to what matters, not what's visible. Don't narrate chart ` +
-        `types or describe the layout ("there is a bar chart showing…") — go ` +
-        `straight to what the data means.\n` +
-        `- Lead with the headline. State the single most important takeaway ` +
-        `first, in one sentence, before any supporting detail.\n` +
-        `- Read the whole page as one picture, not chart-by-chart. If ` +
-        `multiple visuals are shown, connect them — note where they agree, ` +
-        `where they contradict, and what that combination implies.\n` +
-        `- Flag what's notable. Call out outliers, inflection points, or ` +
-        `numbers that look off given the current filters — but only if they ` +
-        `are actually present in the data below. Never invent a number you ` +
-        `cannot see.\n` +
-        `- Respect the current filter/slicer state. Frame your answer in ` +
-        `terms of what is actually being shown, naming the active filters in ` +
-        `plain business terms ("with 2016 selected…"). If nothing is ` +
-        `filtered, say the figures cover everything. Never present filtered ` +
-        `numbers as if they were the whole dataset.\n` +
-        `- If a visual is marked as THE VISUAL THE QUESTION IS ABOUT, answer ` +
-        `about that visual. Do not recap the rest of the page; bring in ` +
-        `another visual only where it directly explains the one asked about.\n` +
-        `- Match the question's scope. A broad question ("what is this ` +
-        `telling me?") gets a short, prioritized summary — 2-4 sentences, ` +
-        `most important first. A specific question about one part of the ` +
-        `screen gets a direct, focused answer, not a full-page recap.\n` +
-        `- If the question needs figures that are NOT on this page — a prior ` +
-        `period, a different slice, anything the visuals don't show — you can ` +
-        `go and get them. Never tell the user you can't, never tell them to ` +
-        `build a view: the query IS your answer, so write as someone about to ` +
-        `run it, not someone declining. At most one short sentence saying ` +
-        `what the page does show and why it falls short, then on its own ` +
-        `final line:\n` +
-        `NEED_DATA: <plainly what you need, naming the entities on screen it ` +
-        `relates to>\n` +
-        `For example: NEED_DATA: 2015 sales for these same five games — Fifa ` +
-        `17, Tom Clancy's Rainbow Six Siege, Uncharted 4, Far Cry Primal, ` +
-        `Overwatch. The underlying model will be queried and you'll be asked ` +
-        `again with the results. Only do this when the page genuinely lacks ` +
-        `the figures — if it has them, just answer.\n` +
-        `- If the question itself is ambiguous — a comparison that doesn't say ` +
-        `what to compare against, on which measure, or over which period, or ` +
-        `a request to build something ("give me a chart") that doesn't say ` +
-        `what to plot — don't guess and don't refuse. Ask.\n` +
-        `Write ONE short sentence saying what you need to pin down (never an ` +
-        `apology, never "I can't"), then on its own final line:\n` +
-        `CLARIFY: {"questions":[{"ask":"<short question>","multi":false,"options":["<option>","<option>"]}]}\n` +
-        `Ask each open axis separately, at most 3 questions with 2-6 options ` +
-        `each, worded in plain business language. Draw the options from what ` +
-        `is actually on this page — the real measures, fields and slicer ` +
-        `values you can see — so every option is one you could deliver.\n` +
-        `Set "multi":true where several answers make sense together (which ` +
-        `measures to include, which categories to cover) and false where only ` +
-        `one can apply (which axis, which single period). The user ticks the ` +
-        `options, so this decides whether more than one may be ticked.\n` +
-        `Prefer answering outright when a sensible reading is obvious.\n` +
-        `- No jargon, no hedging filler. Write like you're briefing a ` +
-        `colleague who needs the point, not a caveat-laden disclaimer.\n\n` +
-        `Keep the full response under 100 words unless the user's question ` +
-        `explicitly asks for more detail. Reply with prose only — no JSON, ` +
-        `no markdown headings.\n\n` +
-        // Screen-only answers are the common case, so without this the
-        // follow-up chips never appear on most replies.
-        FOLLOW_UP_RULE +
-        `(Skip that line entirely if you are emitting NEED_DATA or CLARIFY — ` +
-        `those are requests, not answers.)\n\n` +
-        `Background on the underlying model (for context only; the current ` +
-        `view above is what the user is asking about):\n` +
-        `${(report.schemaDescription || "(not described)").slice(0, 2500)}`,
-      messages: [
-        ...priorTurns,
-        { role: "user", content: `Current report state:\n${stateText}\n\nQuestion: ${question}` },
-      ],
-      maxTokens: 5000,
-    };
-
-    // Stream when the provider supports it. The model dominates the wait, so
-    // emitting text as it's produced is the difference between ten seconds of
-    // blank panel and an answer that starts almost immediately.
-    if (typeof provider.completeStream === "function") {
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      });
-      const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
-
-      try {
-        // Hold the head of the stream back until we know whether this is an
-        // answer, a request for data, or a question back to the user. Both
-        // markers must be the first line, so a short buffer is enough to tell —
-        // and nothing is shown either way until we know, so neither case ever
-        // flashes partial text.
-        const MARKER = /^\s*(NEED_DATA|CLARIFY):/i;
-        let head = "";
-        let held = false;
-        let forwarding = false;
-
-        // Everything received, and how much of it has been forwarded. The two
-        // differ because the trailing FOLLOW_UPS line is held back.
-        let acc = "";
-        let sent = 0;
-        const flush = () => {
-          const safe = emitSafe(acc);
-          if (safe.length > sent) {
-            send({ delta: safe.slice(sent) });
-            sent = safe.length;
-          }
-        };
-
-        // "it's not on the page" adds no new question — it agrees with what
-        // the last turn already worked out. Re-running the analysis returns
-        // the same reply, which is the loop this avoids: go straight to
-        // fetching what that turn said it needed.
-        const confirmed = confirmsPreviousTurn(question, priorTurns);
-
-        const readScreen = () =>
-          provider.completeStream(request, (delta) => {
-            acc += delta;
-            if (forwarding) return flush();
-            head += delta;
-            if (MARKER.test(head)) {
-              held = true;
-              return;
-            }
-            // Once there's enough to rule the markers out, release the buffer.
-            if (held) return;
-            if (head.length >= 24 || /\n/.test(head)) {
-              forwarding = true;
-              flush();
-            }
-          });
-
-        const answer = confirmed ? `NEED_DATA: ${confirmed}` : await readScreen();
-
-        // Ambiguous question — ask rather than guess or fetch the wrong thing.
-        // The marker is looked for anywhere, not just on the first line: a
-        // reply that opens with a sentence and then asks properly is still a
-        // question, and used to reach the user as raw JSON.
-        const clarifyAt = findClarify(answer);
-        if (clarifyAt) {
-          const questions = parseClarify(clarifyAt.payload);
-          return (
-            send({
-              done: true,
-              // Anything the model said before the marker is its reasoning for
-              // asking, which is exactly the framing a good analyst gives.
-              answer:
-                clarifyAt.lead ||
-                (questions.length > 1
-                  ? "A couple of things would change the answer:"
-                  : questions[0].ask),
-              questions,
-              clarify: true,
-              visualContext,
-            }),
-            res.end()
-          );
-        }
-
-        // Found anywhere, not just on the first line. The model habitually
-        // explains what the page does and doesn't show before asking for the
-        // data, and under first-line-only detection that whole reply fell
-        // through as prose — so the user was shown the raw marker and the
-        // query it asked for never ran.
-        const needData = findNeedData(answer);
-        if (!needData) {
-          const split = splitFollowUps(answer);
-          if (!forwarding) send({ delta: split.answer }); // shorter than the buffer
-          return (
-            send({
-              done: true,
-              answer: split.answer,
-              followUps: split.followUps,
-              visualContext,
-            }),
-            res.end()
-          );
-        }
-
-        // --- escalation: the page can't answer it, so query the model -------
-        const needed = needData.payload.trim();
-        send({ stage: "querying" });
-
-        const entities = entitiesOnScreen(state);
-        const filterSummary = describeFilters([
-          ...(state?.reportFilters || []),
-          ...(state?.pageFilters || []),
-        ]);
-
-        const grounding =
-          `The user is looking at a report page and asked a question the page ` +
-          `cannot answer on its own. Write a DAX query for the missing data.\n\n` +
-          `What is needed: ${needed}\n` +
-          `Filters currently applied on their view: ${filterSummary}\n` +
-          // Only when the question actually points back at the screen. Asked
-          // for "top 10 genres in 2016", constraining to the five on screen
-          // returned exactly those five and then explained it couldn't find
-          // ten — the same mistake as an unconstrained query, in reverse.
-          (entities && refersToScreenEntities(question)
-            ? `The question refers to these specific ${entities.header || "items"} ` +
-              `currently shown in "${entities.visualTitle}" — return rows for ` +
-              `THESE, not a fresh top-N:\n${entities.values.map((v) => `- ${v}`).join("\n")}\n`
-            : entities
-              ? `For context, "${entities.visualTitle}" currently shows: ` +
-                `${entities.values.slice(0, 8).join(", ")}. The question asks ` +
-                `for its own set, so do NOT constrain the query to these.\n`
-              : "") +
-          `\nCritical:\n` +
-          `- Apply the time period or slice named in "what is needed" as an ` +
-          `actual filter in the query. Naming a column "2015 Sales" while ` +
-          `filtering nothing returns the wrong figures and is worse than ` +
-          `failing outright.\n` +
-          `- The view's current filter is context for identifying the items. ` +
-          `Do not reapply it if the request asks for a different period.\n` +
-          `- Return one row per item listed above so the results line up with ` +
-          `what is on screen.\n\n` +
-          `Return only the DAX query.`;
-
-        let rows = null;
-        let queryError = null;
-        let usedDax = null;
-        try {
-          usedDax = await generateDaxFor(
-            report,
-            provider,
-            [{ role: "user", content: grounding }],
-            { allowClarify: false, reasoning: "low" }
-          );
-          const credentials = {
-            tenantId: settings.pbiTenantId,
-            clientId: settings.pbiClientId,
-            clientSecret: settings.pbiClientSecret,
-          };
-          const target = { workspaceId: report.workspaceId, datasetId: report.datasetId };
-
-          try {
-            rows = await executeQuery(credentials, { ...target, dax: usedDax });
-          } catch (firstErr) {
-            // Same self-correction the data path gets: most failures here are
-            // mechanical (argument order, quoting) and the model fixes them
-            // once it can see what the engine said.
-            console.error("[escalation] first attempt failed:", firstErr.message);
-            console.error("[escalation] rejected dax:", usedDax.replace(/\s+/g, " ").slice(0, 400));
-            usedDax = await generateDaxFor(
-              report,
-              provider,
-              [
-                { role: "user", content: grounding },
-                { role: "assistant", content: usedDax },
-                {
-                  role: "user",
-                  content:
-                    `Power BI rejected that query:\n\n${firstErr.message}\n\n` +
-                    `Return a corrected DAX query, keeping the same filters and ` +
-                    `the same list of items. Return ONLY the query.`,
-                },
-              ],
-              { allowClarify: false, reasoning: "low" }
-            );
-            rows = await executeQuery(credentials, { ...target, dax: usedDax });
-          }
-        } catch (err) {
-          queryError = err.message;
-          // Worth a server-side line: the user only sees "couldn't retrieve
-          // it", which isn't enough to diagnose a recurring failure.
-          console.error("[escalation] query failed:", err.message);
-          if (usedDax) console.error("[escalation] dax was:", usedDax.replace(/\s+/g, " ").slice(0, 300));
-        }
-
-        // The rows are in hand, so the chart is built from them directly —
-        // type chosen the same way the data path chooses it, labels and values
-        // read straight off the result. Nothing here needs a model.
-        const chartSpec = queryError ? null : buildChartSpec(question, rows || []);
-
-        let composedAcc = "";
-        let composedSent = 0;
-        const composed = await provider.completeStream(
-          {
-            system:
-              problemContext(report) +
-              `You are a data analyst. The user asked a question about the ` +
-              `report page in front of them. The page alone could not answer ` +
-              `it, so the underlying model was queried for the missing part.\n\n` +
-              `Answer their question using both sources, and make clear which ` +
-              `is which — say "on screen" for figures from their current view ` +
-              `and "from the model" (or similar plain wording) for the queried ` +
-              `figures. Lead with the finding. Never state a number that is ` +
-              `not in one of the two sources.\n` +
-              (queryError
-                ? `The query FAILED. Answer from the screen alone and say ` +
-                  `plainly that you could not retrieve the rest — do not ` +
-                  `invent it.\n`
-                : "") +
-              `Keep it under 110 words. Prose first — no JSON and no DAX in ` +
-              `the prose itself.\n\n` +
-              // The rows were fetched precisely because the screen couldn't
-              // show them, so there is no visual of them anywhere. Drawing
-              // them here is the only way the user sees the shape of what was
-              // retrieved rather than a list of numbers in a sentence.
-              // The chart is built from the rows in code, not asked for here.
-              // Asked for it alongside the follow-ups, the model emitted one
-              // trailing line or the other and dropped whichever came first —
-              // about two replies in six carried a chart, however the
-              // instruction was worded. See buildChartSpec.
-              (chartSpec
-                ? `A ${chartSpec.type} chart of these rows is shown beneath ` +
-                  `your answer, so don't describe the shape of the data or ` +
-                  `list every row — give the finding and the figures that ` +
-                  `matter.\n\n`
-                : "") +
-              FOLLOW_UP_RULE +
-              `What was missing: ${needed}\n\n` +
-              `Their current view:\n${stateText}\n\n` +
-              (queryError
-                ? `Query error: ${queryError}`
-                : // Without the query itself the model hedges about its own
-                  // rows — "these also aren't explicitly filtered to 2016 in
-                  // what I received" — which reads as a non-answer even when
-                  // the filter is right there. Show it the query so it can
-                  // see what it is holding.
-                  `This query ran successfully against the model, so its rows ` +
-                  `ARE the slice that was asked for — state them as fact, and ` +
-                  `do not speculate about whether the filter was applied:\n` +
-                  `${usedDax}\n\n` +
-                  `Rows it returned:\n${JSON.stringify(rows || []).slice(0, BUDGETS.RESULT_CHARS)}`),
-            messages: [...priorTurns, { role: "user", content: question }],
-            maxTokens: 5000,
-            // Reconciling screen figures against queried ones is the one
-            // place here where thinking earns its seconds.
-            reasoning: "low",
-          },
-          (delta) => {
-            composedAcc += delta;
-            const safe = emitSafe(composedAcc);
-            if (safe.length > composedSent) {
-              send({ delta: safe.slice(composedSent) });
-              composedSent = safe.length;
-            }
-          }
-        );
-
-        const composedSplit = splitFollowUps(composed);
-        // splitChart still runs: a model that emits the line unprompted would
-        // otherwise leave it sitting in the prose.
-        const composedChart = splitChart(composedSplit.answer);
-
-        send({
-          done: true,
-          answer: composedChart.answer,
-          chart: chartSpec || composedChart.chart,
-          followUps: composedSplit.followUps,
-          visualContext: { ...visualContext, queried: true },
-        });
-      } catch (err) {
-        send({ error: `Visual analysis failed: ${err.message}` });
-      }
-      return res.end();
-    }
-
-    // Providers without streaming (currently Anthropic and Gemini) land here.
-    // They get the same system prompt, so they emit the same markers, and must
-    // therefore get the same handling — otherwise a clarifying question reaches
-    // the user as raw JSON purely because of which model is configured.
-    const raw = await provider.complete(request);
-
-    const clarifyPlain = findClarify(raw);
-    if (clarifyPlain) {
-      const questions = parseClarify(clarifyPlain.payload);
-      return res.json({
-        answer:
-          clarifyPlain.lead ||
-          (questions.length > 1
-            ? "A couple of things would change the answer:"
-            : questions[0].ask),
-        questions,
-        chart: null,
-        clarify: true,
-        visualContext,
-      });
-    }
-
-    // Escalation needs the streaming plumbing, so on these providers the
-    // request is answered from the screen instead — but the marker itself must
-    // never be shown.
-    if (/^\s*NEED_DATA:/i.test(raw)) {
-      return res.json({
-        answer:
-          `That needs figures this page doesn't show, and I can't query the ` +
-          `model on the currently configured provider. Switching to an ` +
-          `OpenAI-compatible model enables it.`,
-        chart: null,
-        visualContext,
-      });
-    }
-
-    const plain = splitFollowUps(raw);
-    res.json({
-      answer: plain.answer,
-      chart: null,
-      followUps: plain.followUps,
-      visualContext,
-    });
+    const done = await screenAnswer.run(
+      {
+        report, settings, provider, question, state,
+        history: sanitizeHistory(req.body && req.body.history),
+        focusVisual: null,
+        aborted: () => cancelled,
+      },
+      emit
+    );
+    emit({ done: true, ...done });
   } catch (err) {
-    res.status(502).json({ error: `Visual analysis failed: ${err.message}` });
+    emit({ error: { message: `Visual analysis failed: ${err.message}`, hint: null, retryable: true, details: err.message } });
   }
+  res.end();
 });
+
 
 // Question -> DAX -> query -> text answer + optional chart spec.
 app.post("/api/chat", async (req, res) => {
