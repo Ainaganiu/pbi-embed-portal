@@ -8,7 +8,13 @@ const {
   updateReport,
   deleteReport,
 } = require("../lib/settings");
-const { getAadToken, clearTokenCache, listWorkspaces, listReports } = require("../lib/powerbi");
+const {
+  getAadToken,
+  clearTokenCache,
+  listWorkspaces,
+  listReports,
+  executeQuery,
+} = require("../lib/powerbi");
 
 const router = express.Router();
 router.use(requireAdmin);
@@ -120,6 +126,63 @@ router.put("/reports/:id", async (req, res) => {
 router.delete("/reports/:id", async (req, res) => {
   await deleteReport(req.params.id);
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// THROWAWAY SPIKE — delete this whole block once the question is answered.
+//
+// Can the service principal read the semantic model's own metadata? DAX INFO
+// functions run as ordinary table functions inside EVALUATE, so they go
+// through executeQueries like any other query -- but Microsoft's docs say
+// they "require semantic model admin permissions", which is a higher bar than
+// running a query. This either works or returns an authorization error, and
+// nothing short of asking the live model settles it.
+//
+// Hit: GET /api/admin/probe-metadata/<reportId> while logged into /admin.
+// ---------------------------------------------------------------------------
+const PROBES = [
+  ["INFO.VIEW.MEASURES", "EVALUATE INFO.VIEW.MEASURES()"],
+  ["INFO.MEASURES", "EVALUATE INFO.MEASURES()"],
+  ["INFO.VIEW.COLUMNS", "EVALUATE INFO.VIEW.COLUMNS()"],
+  ["INFO.VIEW.TABLES", "EVALUATE INFO.VIEW.TABLES()"],
+  ["INFO.VIEW.RELATIONSHIPS", "EVALUATE INFO.VIEW.RELATIONSHIPS()"],
+];
+
+router.get("/probe-metadata/:reportId", async (req, res) => {
+  const reports = await getReports();
+  const report = (reports || []).find((r) => r.id === req.params.reportId);
+  if (!report) return res.status(404).json({ error: `Unknown report "${req.params.reportId}"` });
+  if (!report.datasetId) return res.status(400).json({ error: "That report has no datasetId" });
+
+  const settings = await getSettings();
+  const credentials = {
+    tenantId: settings.pbiTenantId,
+    clientId: settings.pbiClientId,
+    clientSecret: settings.pbiClientSecret,
+  };
+
+  const out = [];
+  for (const [name, dax] of PROBES) {
+    try {
+      const rows = await executeQuery(credentials, {
+        workspaceId: report.workspaceId,
+        datasetId: report.datasetId,
+        dax,
+      });
+      out.push({
+        probe: name,
+        ok: true,
+        rowCount: rows.length,
+        columns: rows.length ? Object.keys(rows[0]) : [],
+        // Two rows is enough to see the shape without dumping a whole model.
+        sample: rows.slice(0, 2),
+      });
+    } catch (err) {
+      out.push({ probe: name, ok: false, error: err.message.slice(0, 500) });
+    }
+  }
+
+  res.json({ report: report.id, probes: out });
 });
 
 module.exports = router;
