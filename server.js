@@ -131,14 +131,6 @@ app.get("/api/embed-token/:id", async (req, res) => {
 // numbers recovered from an image.
 // ---------------------------------------------------------------------------
 
-// High enough to cover a full dashboard page — the point of this path is to
-// read everything on screen, not a sample of it. The per-visual cap is
-// deliberately tight: for "what is this telling me?" the top few rows carry
-// the story, and trimming the payload cuts response time substantially,
-// because the model's reasoning scales with how much data it is handed.
-// When the question is about one specific visual, that visual is the answer,
-// so it gets room for its full row set while the rest stay as brief context.
-
 function describeFilters(filters) {
   if (!Array.isArray(filters) || filters.length === 0) return "none";
   return filters
