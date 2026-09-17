@@ -19,11 +19,13 @@ a service principal, calls Power BI's `GenerateToken` API and returns a
 short-lived access token + embed URL. `powerbi-client` renders the report
 directly after that — no further server involvement until the token expires.
 
-If chat is enabled, a question flows: browser -> server -> LLM (generates
-DAX) -> Power BI `executeQueries` -> LLM again (turns rows into a plain-English
-answer + optional chart spec) -> browser renders the answer and, if present, a
-Chart.js chart. Identical repeat questions are served from an in-memory cache
-instead of re-querying the LLM/Power BI.
+If chat is enabled, a question flows: browser captures the live report state
+(active page, filters, and each visual's own data) -> server -> a small model
+call picks how to answer -> one of three pipelines (read the screen, write and
+run DAX, or help author a measure) -> the answer streams back over SSE with
+progress stages, and any chart is built from the result rows in code and drawn
+with d3 in IBCS notation. Identical repeat questions on the query path are
+served from an in-memory cache.
 
 All configuration — Power BI credentials, the report registry (including each
 report's data-model description used to generate DAX), the LLM provider/key,
@@ -34,19 +36,30 @@ API key) are encrypted at rest.
 ## Project structure
 
 ```
-server.js               # Express app: public routes, session wiring, router mounting
-lib/db.js                # Postgres pool + schema migration
-lib/settings.js           # Settings/reports data layer (cached, encrypts secrets)
-lib/auth.js                # Password hashing + admin lookup + requireAdmin middleware
-lib/crypto.js               # AES-256-GCM encrypt/decrypt for secrets
-lib/powerbi.js               # AAD token cache, GenerateToken, executeQueries
-lib/llm/                      # Pluggable LLM adapters (anthropic, openai, deepseek, gemini)
-lib/llmCache.js                # Exact-match cache for /api/chat responses
-routes/auth.js                  # /api/auth: status, setup (bootstrap), login, logout
-routes/admin.js                  # /api/admin: settings, test-powerbi, reports CRUD
-public/                            # index.html/app.js (portal), login.html/js, admin.html/js
-scripts/seed.js                     # One-time DB seed (run manually if needed)
-render.yaml                          # Render Blueprint (web service + Postgres)
+server.js                 # Express app: public routes, session wiring, router mounting
+lib/db.js                  # Postgres pool + schema migration
+lib/settings.js             # Settings/reports data layer (cached, encrypts secrets)
+lib/auth.js                  # Password hashing + admin lookup + requireAdmin middleware
+lib/crypto.js                 # AES-256-GCM encrypt/decrypt for secrets
+lib/powerbi.js                 # AAD token cache, GenerateToken, executeQueries
+lib/llm/                        # Pluggable LLM adapters (anthropic, openai, deepseek, gemini)
+lib/budgets.js                   # Every size and token cap, in one place
+lib/route.js                      # Model router + regex fallback
+lib/errors.js                      # Failure -> message the user can act on
+lib/starters.js                     # Report-specific opening questions
+lib/chartChoice.js                   # Rows -> chart type and spec
+lib/chatHelpers.js                    # Shared chat helpers: history sanitising, report context, code-fence stripping
+lib/daxSkills.js                       # DAX authoring rules and per-pattern skills fed to prompts
+lib/daxLint.js                          # Mechanical DAX repairs and grounding checks before/after execution
+lib/llmCache.js                          # Exact-match cache for repeat query-path answers
+lib/answer/{screen,query,authoring}.js    # The three answer pipelines
+lib/answer/{state,dax}.js                  # Shared: report-state rendering, DAX generation
+routes/chat.js                              # POST /api/chat: the streaming front door
+routes/auth.js                               # /api/auth: status, setup, login, logout
+routes/admin.js                               # /api/admin: settings, test-powerbi, reports CRUD
+public/                                        # index.html/app.js, charts.js, chartGeometry.js, login.html/js, admin.html/js, style.css
+scripts/seed.js                                 # One-time DB seed (run manually if needed)
+render.yaml                                      # Render Blueprint (web service + Postgres)
 ```
 
 ## Setup
@@ -133,13 +146,10 @@ Notes:
   `ADMIN_PASSWORD` env vars and restart.
 - **Tokens expire** — the embed token isn't auto-refreshed, so a long-open
   tab will eventually need a page reload.
-- **(If chat is enabled) No DAX validation** — generated queries run
-  directly against the dataset without being checked against the schema
-  first. The generated DAX is returned alongside the answer so you can spot
-  check it.
-- **(If chat is enabled) Chart type is chosen by the LLM, not the user.**
-- **(If chat is enabled) No conversation memory** — each question is
-  handled independently.
+- **(If chat is enabled) Chat cost scales with the page.** The screen path
+  sends every visual's data to the model on every question. A dense page
+  costs materially more per question than a sparse one. The caps are all in
+  `lib/budgets.js`.
 
 ## Roadmap (post-MVP)
 
@@ -147,7 +157,7 @@ Notes:
 - [ ] RLS-aware embed tokens per client
 - [ ] Auto-refresh embed tokens before they expire
 - [ ] Usage analytics (which reports get viewed, by whom)
-- [ ] Validate generated DAX against the schema before execution
-- [ ] Let users pick/override the chart type (bar, line, pie, table)
-- [ ] Add short-term conversation memory to the chat
+- [x] Validate generated DAX against the schema before execution
+- [x] Let users pick/override the chart type (bar, line, pie, table)
+- [x] Add short-term conversation memory to the chat
 - [ ] Support additional chart types beyond bar/line (e.g. stacked, %)
