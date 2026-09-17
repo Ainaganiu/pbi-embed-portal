@@ -14,13 +14,17 @@ const adminRouter = require("./routes/admin");
 const authoringRouter = require("./routes/authoring");
 const { CORE_RULES } = require("./lib/daxSkills");
 const { lintDax, groundingIssues } = require("./lib/daxLint");
-const { chooseChartType } = require("./lib/chartChoice");
+const { chooseChartType, buildChartSpec } = require("./lib/chartChoice");
 const {
   problemContext,
   sanitizeHistory,
   stripCodeFence,
   parseClarify,
   findClarify,
+  findNeedData,
+  confirmsPreviousTurn,
+  refersToScreenEntities,
+  splitChart,
   FOLLOW_UP_RULE,
   splitFollowUps,
   emitSafe,
@@ -278,6 +282,10 @@ async function generateDaxFor(report, provider, messages, opts = {}) {
       // Reasoning models spend completion tokens thinking before emitting
       // anything; this is a ceiling, not a target.
       maxTokens: 5000,
+      // Off by default. Turned on only where the query has to line up with
+      // something — the entities on screen, a period named in the question —
+      // and a plausible-looking wrong query would read as an answer.
+      reasoning: opts.reasoning,
     })
   );
 
@@ -371,9 +379,12 @@ app.post("/api/chat/visual", async (req, res) => {
         `most important first. A specific question about one part of the ` +
         `screen gets a direct, focused answer, not a full-page recap.\n` +
         `- If the question needs figures that are NOT on this page — a prior ` +
-        `period, a different slice, anything the visuals don't show — do not ` +
-        `tell the user to go and build a view. Instead make your ENTIRE reply ` +
-        `a single line, nothing before or after it:\n` +
+        `period, a different slice, anything the visuals don't show — you can ` +
+        `go and get them. Never tell the user you can't, never tell them to ` +
+        `build a view: the query IS your answer, so write as someone about to ` +
+        `run it, not someone declining. At most one short sentence saying ` +
+        `what the page does show and why it falls short, then on its own ` +
+        `final line:\n` +
         `NEED_DATA: <plainly what you need, naming the entities on screen it ` +
         `relates to>\n` +
         `For example: NEED_DATA: 2015 sales for these same five games — Fifa ` +
@@ -402,6 +413,11 @@ app.post("/api/chat/visual", async (req, res) => {
         `Keep the full response under 100 words unless the user's question ` +
         `explicitly asks for more detail. Reply with prose only — no JSON, ` +
         `no markdown headings.\n\n` +
+        // Screen-only answers are the common case, so without this the
+        // follow-up chips never appear on most replies.
+        FOLLOW_UP_RULE +
+        `(Skip that line entirely if you are emitting NEED_DATA or CLARIFY — ` +
+        `those are requests, not answers.)\n\n` +
         `Background on the underlying model (for context only; the current ` +
         `view above is what the user is asking about):\n` +
         `${(report.schemaDescription || "(not described)").slice(0, 2500)}`,
@@ -447,21 +463,30 @@ app.post("/api/chat/visual", async (req, res) => {
           }
         };
 
-        const answer = await provider.completeStream(request, (delta) => {
-          acc += delta;
-          if (forwarding) return flush();
-          head += delta;
-          if (MARKER.test(head)) {
-            held = true;
-            return;
-          }
-          // Once there's enough to rule the markers out, release the buffer.
-          if (held) return;
-          if (head.length >= 24 || /\n/.test(head)) {
-            forwarding = true;
-            flush();
-          }
-        });
+        // "it's not on the page" adds no new question — it agrees with what
+        // the last turn already worked out. Re-running the analysis returns
+        // the same reply, which is the loop this avoids: go straight to
+        // fetching what that turn said it needed.
+        const confirmed = confirmsPreviousTurn(question, priorTurns);
+
+        const readScreen = () =>
+          provider.completeStream(request, (delta) => {
+            acc += delta;
+            if (forwarding) return flush();
+            head += delta;
+            if (MARKER.test(head)) {
+              held = true;
+              return;
+            }
+            // Once there's enough to rule the markers out, release the buffer.
+            if (held) return;
+            if (head.length >= 24 || /\n/.test(head)) {
+              forwarding = true;
+              flush();
+            }
+          });
+
+        const answer = confirmed ? `NEED_DATA: ${confirmed}` : await readScreen();
 
         // Ambiguous question — ask rather than guess or fetch the wrong thing.
         // The marker is looked for anywhere, not just on the first line: a
@@ -488,7 +513,13 @@ app.post("/api/chat/visual", async (req, res) => {
           );
         }
 
-        if (!/^\s*NEED_DATA:/i.test(answer)) {
+        // Found anywhere, not just on the first line. The model habitually
+        // explains what the page does and doesn't show before asking for the
+        // data, and under first-line-only detection that whole reply fell
+        // through as prose — so the user was shown the raw marker and the
+        // query it asked for never ran.
+        const needData = findNeedData(answer);
+        if (!needData) {
           const split = splitFollowUps(answer);
           if (!forwarding) send({ delta: split.answer }); // shorter than the buffer
           return (
@@ -503,7 +534,7 @@ app.post("/api/chat/visual", async (req, res) => {
         }
 
         // --- escalation: the page can't answer it, so query the model -------
-        const needed = answer.replace(/^\s*NEED_DATA:\s*/i, "").trim();
+        const needed = needData.payload.trim();
         send({ stage: "querying" });
 
         const entities = entitiesOnScreen(state);
@@ -517,11 +548,19 @@ app.post("/api/chat/visual", async (req, res) => {
           `cannot answer on its own. Write a DAX query for the missing data.\n\n` +
           `What is needed: ${needed}\n` +
           `Filters currently applied on their view: ${filterSummary}\n` +
-          (entities
+          // Only when the question actually points back at the screen. Asked
+          // for "top 10 genres in 2016", constraining to the five on screen
+          // returned exactly those five and then explained it couldn't find
+          // ten — the same mistake as an unconstrained query, in reverse.
+          (entities && refersToScreenEntities(question)
             ? `The question refers to these specific ${entities.header || "items"} ` +
               `currently shown in "${entities.visualTitle}" — return rows for ` +
               `THESE, not a fresh top-N:\n${entities.values.map((v) => `- ${v}`).join("\n")}\n`
-            : "") +
+            : entities
+              ? `For context, "${entities.visualTitle}" currently shows: ` +
+                `${entities.values.slice(0, 8).join(", ")}. The question asks ` +
+                `for its own set, so do NOT constrain the query to these.\n`
+              : "") +
           `\nCritical:\n` +
           `- Apply the time period or slice named in "what is needed" as an ` +
           `actual filter in the query. Naming a column "2015 Sales" while ` +
@@ -541,7 +580,7 @@ app.post("/api/chat/visual", async (req, res) => {
             report,
             provider,
             [{ role: "user", content: grounding }],
-            { allowClarify: false }
+            { allowClarify: false, reasoning: "low" }
           );
           const credentials = {
             tenantId: settings.pbiTenantId,
@@ -557,6 +596,7 @@ app.post("/api/chat/visual", async (req, res) => {
             // mechanical (argument order, quoting) and the model fixes them
             // once it can see what the engine said.
             console.error("[escalation] first attempt failed:", firstErr.message);
+            console.error("[escalation] rejected dax:", usedDax.replace(/\s+/g, " ").slice(0, 400));
             usedDax = await generateDaxFor(
               report,
               provider,
@@ -571,7 +611,7 @@ app.post("/api/chat/visual", async (req, res) => {
                     `the same list of items. Return ONLY the query.`,
                 },
               ],
-              { allowClarify: false }
+              { allowClarify: false, reasoning: "low" }
             );
             rows = await executeQuery(credentials, { ...target, dax: usedDax });
           }
@@ -582,6 +622,11 @@ app.post("/api/chat/visual", async (req, res) => {
           console.error("[escalation] query failed:", err.message);
           if (usedDax) console.error("[escalation] dax was:", usedDax.replace(/\s+/g, " ").slice(0, 300));
         }
+
+        // The rows are in hand, so the chart is built from them directly —
+        // type chosen the same way the data path chooses it, labels and values
+        // read straight off the result. Nothing here needs a model.
+        const chartSpec = queryError ? null : buildChartSpec(question, rows || []);
 
         let composedAcc = "";
         let composedSent = 0;
@@ -602,15 +647,43 @@ app.post("/api/chat/visual", async (req, res) => {
                   `plainly that you could not retrieve the rest — do not ` +
                   `invent it.\n`
                 : "") +
-              `Keep it under 110 words. Prose only, no JSON, no DAX.\n\n` +
+              `Keep it under 110 words. Prose first — no JSON and no DAX in ` +
+              `the prose itself.\n\n` +
+              // The rows were fetched precisely because the screen couldn't
+              // show them, so there is no visual of them anywhere. Drawing
+              // them here is the only way the user sees the shape of what was
+              // retrieved rather than a list of numbers in a sentence.
+              // The chart is built from the rows in code, not asked for here.
+              // Asked for it alongside the follow-ups, the model emitted one
+              // trailing line or the other and dropped whichever came first —
+              // about two replies in six carried a chart, however the
+              // instruction was worded. See buildChartSpec.
+              (chartSpec
+                ? `A ${chartSpec.type} chart of these rows is shown beneath ` +
+                  `your answer, so don't describe the shape of the data or ` +
+                  `list every row — give the finding and the figures that ` +
+                  `matter.\n\n`
+                : "") +
               FOLLOW_UP_RULE +
               `What was missing: ${needed}\n\n` +
               `Their current view:\n${stateText}\n\n` +
               (queryError
                 ? `Query error: ${queryError}`
-                : `Rows returned from the model:\n${JSON.stringify(rows || []).slice(0, MAX_RESULT_CHARS)}`),
+                : // Without the query itself the model hedges about its own
+                  // rows — "these also aren't explicitly filtered to 2016 in
+                  // what I received" — which reads as a non-answer even when
+                  // the filter is right there. Show it the query so it can
+                  // see what it is holding.
+                  `This query ran successfully against the model, so its rows ` +
+                  `ARE the slice that was asked for — state them as fact, and ` +
+                  `do not speculate about whether the filter was applied:\n` +
+                  `${usedDax}\n\n` +
+                  `Rows it returned:\n${JSON.stringify(rows || []).slice(0, MAX_RESULT_CHARS)}`),
             messages: [...priorTurns, { role: "user", content: question }],
             maxTokens: 5000,
+            // Reconciling screen figures against queried ones is the one
+            // place here where thinking earns its seconds.
+            reasoning: "low",
           },
           (delta) => {
             composedAcc += delta;
@@ -623,9 +696,14 @@ app.post("/api/chat/visual", async (req, res) => {
         );
 
         const composedSplit = splitFollowUps(composed);
+        // splitChart still runs: a model that emits the line unprompted would
+        // otherwise leave it sitting in the prose.
+        const composedChart = splitChart(composedSplit.answer);
+
         send({
           done: true,
-          answer: composedSplit.answer,
+          answer: composedChart.answer,
+          chart: chartSpec || composedChart.chart,
           followUps: composedSplit.followUps,
           visualContext: { ...visualContext, queried: true },
         });

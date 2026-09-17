@@ -925,7 +925,10 @@
     // follow-ups, both of which are stripped out of the stream.
     return {
       answer: final.answer || text,
-      chart: null,
+      // The escalation path queries the model for figures the page doesn't
+      // show, so there is no visual of them anywhere — this is the only place
+      // the user sees their shape.
+      chart: final.chart || null,
       questions: final.questions,
       clarify: final.clarify,
       followUps: final.followUps,

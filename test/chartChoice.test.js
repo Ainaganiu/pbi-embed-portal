@@ -121,3 +121,54 @@ test("three or more measures is a table even over time", () => {
   }));
   assert.equal(chooseChartType("everything by year", rows).type, "table");
 });
+
+// ---- building the spec, not just choosing the type ----------------------
+
+const { buildChartSpec } = require("../lib/chartChoice");
+
+test("a spec is built straight from the rows", () => {
+  const rows = [
+    { "Data[Genre]": "Action", "[Total Sales]": 33110 },
+    { "Data[Genre]": "Shooter", "[Total Sales]": 20890 },
+  ];
+  const spec = buildChartSpec("top genres in 2016", rows);
+  assert.equal(spec.type, "bar");
+  assert.deepEqual(spec.labels, ["Action", "Shooter"]);
+  assert.deepEqual(spec.values, [33110, 20890]);
+  assert.equal(spec.label, "Total Sales", "the measure name, not its bracketed key");
+});
+
+test("two measures over time become AC and PY series", () => {
+  const rows = Array.from({ length: 8 }, (_, i) => ({
+    "Date[Year]": String(2010 + i),
+    "[Sales]": 100 + i,
+    "[Prior]": 90 + i,
+  }));
+  const spec = buildChartSpec("sales by year", rows);
+  assert.equal(spec.type, "line");
+  assert.equal(spec.series.length, 2);
+  assert.equal(spec.series[0].scenario, "AC");
+  assert.equal(spec.series[1].scenario, "PY");
+  assert.equal(spec.series[0].values.length, 8);
+});
+
+test("a table spec keeps every column, category first", () => {
+  const rows = [
+    { "Data[Genre]": "Action", "[Sales]": 1, "[Games]": 2, "[Share]": 3 },
+  ];
+  const spec = buildChartSpec("everything by genre", rows);
+  assert.equal(spec.type, "table");
+  assert.deepEqual(spec.columns, ["Genre", "Sales", "Games", "Share"]);
+  assert.deepEqual(spec.rows, [["Action", 1, 2, 3]]);
+});
+
+test("a single value builds a card", () => {
+  const spec = buildChartSpec("total sales in 2015", [{ "[Total Sales]": 330560 }]);
+  assert.equal(spec.type, "card");
+  assert.deepEqual(spec.values, [330560]);
+});
+
+test("unchartable rows build nothing", () => {
+  assert.equal(buildChartSpec("anything", []), null);
+  assert.equal(buildChartSpec("list genres", [{ "Data[Genre]": "Action" }, { "Data[Genre]": "Sports" }]), null);
+});
