@@ -931,7 +931,7 @@
         row.remove();
         return;
       }
-      renderErrorRow(row, err, () => runAnswer(row, question));
+      renderErrorRow(row, err, () => startAnswer(row, question));
     } finally {
       inFlight = null;
       setSending(false);
@@ -966,14 +966,22 @@
   // view has been captured, and capture is the slowest part of the request.
   let asking = false;
 
-  function askQuestion(question) {
+  // The only way `runAnswer` is ever called. Retry reaches it too, so a retry
+  // in flight blocks a new question exactly as a new question does — otherwise
+  // retry would be the one path that could still be orphaned.
+  function startAnswer(row, question) {
     if (asking) return false;
     asking = true;
+    runAnswer(row, question).finally(() => { asking = false; });
+    return true;
+  }
+
+  function askQuestion(question) {
+    if (asking) return false;
     pendingClarifyQuestion = question;
     appendUserRow(question);
     const row = appendThinkingRow();
-    runAnswer(row, question).finally(() => { asking = false; });
-    return true;
+    return startAnswer(row, question);
   }
 
   chatForm.addEventListener("submit", (e) => {
