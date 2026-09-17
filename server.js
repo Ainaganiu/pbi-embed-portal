@@ -10,10 +10,10 @@ const { generateEmbedToken } = require("./lib/powerbi");
 const { getProvider } = require("./lib/llm");
 const authRouter = require("./routes/auth");
 const adminRouter = require("./routes/admin");
-const authoringRouter = require("./routes/authoring");
 const { sanitizeHistory } = require("./lib/chatHelpers");
 const screenAnswer = require("./lib/answer/screen");
 const queryAnswer = require("./lib/answer/query");
+const authoringAnswer = require("./lib/answer/authoring");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -33,8 +33,6 @@ app.use(express.static(path.join(__dirname, "public")));
 
 app.use("/api/auth", authRouter);
 app.use("/api/admin", adminRouter);
-app.use("/api/chat/authoring", authoringRouter);
-
 function settingsUnavailable(res, err) {
   res.status(503).json({ error: `Settings database unavailable: ${err.message}` });
 }
@@ -203,6 +201,55 @@ app.post("/api/chat", async (req, res) => {
     emit({ done: true, ...done });
   } catch (err) {
     emit({ error: { message: `Query failed: ${err.message}`, hint: null, retryable: true, details: err.message } });
+  }
+  res.end();
+});
+
+// Temporary: replaced by routes/chat.js in the front-door commit.
+app.post("/api/chat/authoring", async (req, res) => {
+  const { reportId, question } = req.body || {};
+  let settings, report;
+  try {
+    settings = await getSettings();
+    report = await getReport(reportId);
+  } catch (err) {
+    return settingsUnavailable(res, err);
+  }
+  if (!report) return res.status(404).json({ error: `Unknown report "${reportId}"` });
+  if (!question || typeof question !== "string") return res.status(400).json({ error: "Missing question" });
+
+  const provider = getProvider({
+    provider: settings.llmProvider,
+    apiKey: settings.llmApiKey,
+    model: settings.llmModel,
+    apiBase: settings.llmApiBase,
+  });
+  if (!provider) return res.status(400).json({ error: `Chat is not enabled for report "${reportId}"` });
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  const emit = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+  let cancelled = false;
+  req.on("close", () => { cancelled = true; });
+
+  try {
+    const done = await authoringAnswer.run(
+      {
+        report, settings, provider, question, state: null,
+        history: sanitizeHistory(req.body && req.body.history),
+        focusVisual: null,
+        aborted: () => cancelled,
+      },
+      emit
+    );
+    emit({ done: true, ...done });
+  } catch (err) {
+    emit({ error: { message: `Authoring help failed: ${err.message}`, hint: null, retryable: true, details: err.message } });
   }
   res.end();
 });
