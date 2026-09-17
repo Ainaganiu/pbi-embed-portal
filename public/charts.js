@@ -14,9 +14,12 @@
 // brand accent deliberately does not reach chart data; it stays on the
 // surrounding UI.
 //
-// Everything that doesn't carry information is removed: no gridlines, no
-// background fills, no legend where a direct label will do, no axis where the
-// data labels already give the values.
+// Everything that doesn't carry information is removed: no background fills,
+// no legend where a direct label will do, no gridlines and no axis where the
+// data labels already give the values. The one exception is a chart whose
+// bands are too narrow for direct labels — there a three-tick axis with
+// hairline gridlines comes back, because a chart with no numbers anywhere on
+// it is worse than one with a little furniture.
 //
 // Entry point: renderChart(container, spec, { width, maxHeight }) -- the height
 // itself comes from the content, via ChartGeometry.
@@ -189,12 +192,22 @@
 
   // ---- vertical columns: time on the horizontal axis -----------------------
 
+  // Named because the axis decision has to predict the band width before the
+  // scales are built, and a padding changed in one place only would silently
+  // make that prediction wrong.
+  const X0_PADDING = 0.3;
+  const X1_PADDING = 0.08;
+
   function renderColumn(container, spec, width, height) {
     const series = seriesOf(spec);
     const labels = labelsOf(spec);
     addTitle(container, spec);
 
-    const approxBand = (width - 16) / Math.max(1, labels.length) / Math.max(1, series.length);
+    // The raw slot per bar, less what the two band paddings below will take
+    // out of it -- an estimate of x1.bandwidth() before the scales exist, so
+    // the margin and the axis can be decided together from one number.
+    const slot = (width - 16) / Math.max(1, labels.length) / Math.max(1, series.length);
+    const approxBand = slot * (1 - X0_PADDING) * (1 - X1_PADDING);
     const needsAxis = !ChartGeometry.labelsFit(approxBand);
     const margin = { top: 18, right: 8, bottom: 30, left: needsAxis ? 34 : 8 };
     const innerW = width - margin.left - margin.right;
@@ -203,12 +216,12 @@
     const svg = newSvg(container, width, height);
     const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
-    const x0 = d3.scaleBand().domain(labels).range([0, innerW]).padding(0.3);
+    const x0 = d3.scaleBand().domain(labels).range([0, innerW]).padding(X0_PADDING);
     const x1 = d3
       .scaleBand()
       .domain(series.map((s) => s.name))
       .range([0, x0.bandwidth()])
-      .padding(0.08);
+      .padding(X1_PADDING);
 
     const all = series.flatMap((s) => s.values);
     // Widened to include zero: a domain of [0, max] renders every negative
@@ -237,13 +250,15 @@
           .append("title")
           .text(`${label} · ${s.name}: ${fullNumber(v)}`);
 
-        // Direct labels replace the y-axis entirely.
+        // Direct labels replace the y-axis entirely. They sit outside the bar
+        // on whichever side it grew: ink on ink is an invisible label.
         if (!needsAxis) {
           group
             .append("text")
             .attr("class", "ibcs-value")
             .attr("x", x1(s.name) + x1.bandwidth() / 2)
-            .attr("y", y(v) - 4)
+            .attr("y", v >= 0 ? y(v) - 4 : y(v) + 4)
+            .attr("dy", v >= 0 ? null : "0.8em")
             .attr("text-anchor", "middle")
             .text(formatValue(v));
         }
@@ -252,7 +267,7 @@
 
     if (needsAxis) addValueAxis(g, y, innerW);
 
-    // Baseline only — no gridlines, no y-axis.
+    // The zero line, drawn over any gridlines the axis above brought with it.
     g.append("line")
       .attr("x1", 0)
       .attr("x2", innerW)
@@ -333,12 +348,15 @@
           .append("title")
           .text(`${label} · ${s.name}: ${fullNumber(v)}`);
 
+        // Outside the bar on whichever side it grew: ink on ink is an
+        // invisible label.
         group
           .append("text")
           .attr("class", "ibcs-value")
-          .attr("x", x(v) + 4)
+          .attr("x", v >= 0 ? x(v) + 4 : x(v) - 4)
           .attr("y", y1(s.name) + y1.bandwidth() / 2)
           .attr("dy", "0.35em")
+          .attr("text-anchor", v >= 0 ? "start" : "end")
           .text(formatValue(v));
       });
     });
