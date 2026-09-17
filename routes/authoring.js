@@ -92,7 +92,7 @@ router.post("/", async (req, res) => {
         problemContext(report) +
         `You are a Power BI consultant helping someone build or fix something ` +
         `in their own report. Respond with ONLY a JSON object:\n` +
-        `{"answer": "<explanation as markdown>", "dax": "<the measure or query, or null>", "testTable": "<table to define a test measure on, or null>"}\n\n` +
+        `{"answer": "<explanation as markdown>", "dax": "<the measure or query, or null>", "testTable": "<table to define a test measure on, or null>", "followUps": ["<question>", "<question>", "<question>"]}\n\n` +
         `Put code in "dax", never inside the answer text — it is rendered ` +
         `separately. For a measure give the expression only (no "Name = " ` +
         `prefix), and name the fact table in "testTable" so it can be checked ` +
@@ -102,6 +102,8 @@ router.post("/", async (req, res) => {
         `matters — performance, measure vs calculated column, or filter ` +
         `context. Keep the explanation under 120 words. Use their real tables, ` +
         `columns and measures, spelled exactly; never invent names.\n\n` +
+        `"followUps" are three questions this naturally leads to — extending ` +
+        `the measure, a variant, a related problem — each under nine words.\n\n` +
         PATTERNS +
         `\n\n` +
         CORE_RULES +
@@ -122,6 +124,7 @@ router.post("/", async (req, res) => {
 
     const result = {
       answer: parsed.answer || "",
+      followUps: Array.isArray(parsed.followUps) ? parsed.followUps.slice(0, 3) : [],
       dax: parsed.dax ? renameReservedVars(parsed.dax) : null,
       chart: null,
       authoring: true,

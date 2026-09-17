@@ -13,7 +13,17 @@ const authRouter = require("./routes/auth");
 const adminRouter = require("./routes/admin");
 const authoringRouter = require("./routes/authoring");
 const { CORE_RULES } = require("./lib/daxSkills");
-const { problemContext, sanitizeHistory, stripCodeFence, parseClarify } = require("./lib/chatHelpers");
+const { lintDax, groundingIssues } = require("./lib/daxLint");
+const {
+  problemContext,
+  sanitizeHistory,
+  stripCodeFence,
+  parseClarify,
+  findClarify,
+  FOLLOW_UP_RULE,
+  splitFollowUps,
+  emitSafe,
+} = require("./lib/chatHelpers");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -231,12 +241,16 @@ function buildDaxSystemPrompt(report, opts = {}) {
         `column, filter or time period it means, and picking wrongly would give ` +
         `a materially different answer, do NOT write a query. Instead reply with ` +
         `a single line of exactly this shape:\n` +
-        `CLARIFY: {"questions":[{"ask":"<short question>","options":["<option>","<option>"]}]}\n` +
+        `CLARIFY: {"questions":[{"ask":"<short question>","multi":false,"options":["<option>","<option>"]}]}\n` +
         `A comparison is the usual case: "compare these" leaves open what to ` +
         `compare against, on which measure, and over which period. Ask each ` +
         `open axis as its own question so they can all be answered at once — ` +
-        `at most 3 questions, each with 2 to 4 options.\n` +
-        `Example: CLARIFY: {"questions":[{"ask":"Compare against what?","options":["The previous year","Other regions","Other genres"]},{"ask":"Using which measure?","options":["Total sales","Number of transactions"]}]}\n` +
+        `at most 3 questions, each with 2 to 6 options.\n` +
+        `Set "multi":true where several answers genuinely make sense together ` +
+        `(which measures to include, which regions to cover) and false where ` +
+        `only one can apply (which axis, which single period). The user ticks ` +
+        `them, so this decides whether they may tick more than one.\n` +
+        `Example: CLARIFY: {"questions":[{"ask":"Compare against what?","multi":false,"options":["The previous year","Other regions","Other genres"]},{"ask":"Which measures should it show?","multi":true,"options":["Total sales","Number of transactions","Year-on-year change"]}]}\n` +
         `Draw the options from what actually exists in the schema, and word ` +
         `them in plain business language — never expose raw measure or column ` +
         `syntax like [1_ Total Interactions] or 'Table'[Column].\n` +
@@ -256,7 +270,7 @@ function buildDaxSystemPrompt(report, opts = {}) {
 // Shared by the data path and by escalation from the visual path, so both get
 // the same rules, schema grounding and CORE_RULES.
 async function generateDaxFor(report, provider, messages, opts = {}) {
-  return stripCodeFence(
+  const raw = stripCodeFence(
     await provider.complete({
       system: buildDaxSystemPrompt(report, opts),
       messages,
@@ -265,6 +279,16 @@ async function generateDaxFor(report, provider, messages, opts = {}) {
       maxTokens: 5000,
     })
   );
+
+  // A clarifying question isn't a query, so it must not be rewritten.
+  if (findClarify(raw)) return raw;
+
+  // Repair the SUMMARIZECOLUMNS shapes the model keeps getting wrong even when
+  // shown the engine's own error. Each has one correct rewrite, so fixing them
+  // here saves a failed round trip to Power BI — see lib/daxLint.js.
+  const { dax, notes } = lintDax(raw);
+  if (notes.length) console.error("[dax lint]", notes.join("; "));
+  return dax;
 }
 
 app.post("/api/chat/visual", async (req, res) => {
@@ -357,12 +381,21 @@ app.post("/api/chat/visual", async (req, res) => {
         `again with the results. Only do this when the page genuinely lacks ` +
         `the figures — if it has them, just answer.\n` +
         `- If the question itself is ambiguous — a comparison that doesn't say ` +
-        `what to compare against, on which measure, or over which period — ` +
-        `don't guess and don't fetch. Make your ENTIRE reply one line:\n` +
-        `CLARIFY: {"questions":[{"ask":"<short question>","options":["<option>","<option>"]}]}\n` +
-        `Ask each open axis separately, at most 3 questions with 2-4 options ` +
-        `each, worded in plain business language. Prefer answering outright ` +
-        `when a sensible reading is obvious.\n` +
+        `what to compare against, on which measure, or over which period, or ` +
+        `a request to build something ("give me a chart") that doesn't say ` +
+        `what to plot — don't guess and don't refuse. Ask.\n` +
+        `Write ONE short sentence saying what you need to pin down (never an ` +
+        `apology, never "I can't"), then on its own final line:\n` +
+        `CLARIFY: {"questions":[{"ask":"<short question>","multi":false,"options":["<option>","<option>"]}]}\n` +
+        `Ask each open axis separately, at most 3 questions with 2-6 options ` +
+        `each, worded in plain business language. Draw the options from what ` +
+        `is actually on this page — the real measures, fields and slicer ` +
+        `values you can see — so every option is one you could deliver.\n` +
+        `Set "multi":true where several answers make sense together (which ` +
+        `measures to include, which categories to cover) and false where only ` +
+        `one can apply (which axis, which single period). The user ticks the ` +
+        `options, so this decides whether more than one may be ticked.\n` +
+        `Prefer answering outright when a sensible reading is obvious.\n` +
         `- No jargon, no hedging filler. Write like you're briefing a ` +
         `colleague who needs the point, not a caveat-laden disclaimer.\n\n` +
         `Keep the full response under 100 words unless the user's question ` +
@@ -401,8 +434,21 @@ app.post("/api/chat/visual", async (req, res) => {
         let held = false;
         let forwarding = false;
 
+        // Everything received, and how much of it has been forwarded. The two
+        // differ because the trailing FOLLOW_UPS line is held back.
+        let acc = "";
+        let sent = 0;
+        const flush = () => {
+          const safe = emitSafe(acc);
+          if (safe.length > sent) {
+            send({ delta: safe.slice(sent) });
+            sent = safe.length;
+          }
+        };
+
         const answer = await provider.completeStream(request, (delta) => {
-          if (forwarding) return send({ delta });
+          acc += delta;
+          if (forwarding) return flush();
           head += delta;
           if (MARKER.test(head)) {
             held = true;
@@ -412,20 +458,27 @@ app.post("/api/chat/visual", async (req, res) => {
           if (held) return;
           if (head.length >= 24 || /\n/.test(head)) {
             forwarding = true;
-            send({ delta: head });
+            flush();
           }
         });
 
         // Ambiguous question — ask rather than guess or fetch the wrong thing.
-        if (/^\s*CLARIFY:/i.test(answer)) {
-          const questions = parseClarify(answer);
+        // The marker is looked for anywhere, not just on the first line: a
+        // reply that opens with a sentence and then asks properly is still a
+        // question, and used to reach the user as raw JSON.
+        const clarifyAt = findClarify(answer);
+        if (clarifyAt) {
+          const questions = parseClarify(clarifyAt.payload);
           return (
             send({
               done: true,
+              // Anything the model said before the marker is its reasoning for
+              // asking, which is exactly the framing a good analyst gives.
               answer:
-                questions.length > 1
+                clarifyAt.lead ||
+                (questions.length > 1
                   ? "A couple of things would change the answer:"
-                  : questions[0].ask,
+                  : questions[0].ask),
               questions,
               clarify: true,
               visualContext,
@@ -435,8 +488,17 @@ app.post("/api/chat/visual", async (req, res) => {
         }
 
         if (!/^\s*NEED_DATA:/i.test(answer)) {
-          if (!forwarding) send({ delta: answer }); // shorter than the buffer
-          return send({ done: true, answer: answer.trim(), visualContext }), res.end();
+          const split = splitFollowUps(answer);
+          if (!forwarding) send({ delta: split.answer }); // shorter than the buffer
+          return (
+            send({
+              done: true,
+              answer: split.answer,
+              followUps: split.followUps,
+              visualContext,
+            }),
+            res.end()
+          );
         }
 
         // --- escalation: the page can't answer it, so query the model -------
@@ -520,6 +582,8 @@ app.post("/api/chat/visual", async (req, res) => {
           if (usedDax) console.error("[escalation] dax was:", usedDax.replace(/\s+/g, " ").slice(0, 300));
         }
 
+        let composedAcc = "";
+        let composedSent = 0;
         const composed = await provider.completeStream(
           {
             system:
@@ -538,6 +602,7 @@ app.post("/api/chat/visual", async (req, res) => {
                   `invent it.\n`
                 : "") +
               `Keep it under 110 words. Prose only, no JSON, no DAX.\n\n` +
+              FOLLOW_UP_RULE +
               `What was missing: ${needed}\n\n` +
               `Their current view:\n${stateText}\n\n` +
               (queryError
@@ -546,12 +611,21 @@ app.post("/api/chat/visual", async (req, res) => {
             messages: [...priorTurns, { role: "user", content: question }],
             maxTokens: 5000,
           },
-          (delta) => send({ delta })
+          (delta) => {
+            composedAcc += delta;
+            const safe = emitSafe(composedAcc);
+            if (safe.length > composedSent) {
+              send({ delta: safe.slice(composedSent) });
+              composedSent = safe.length;
+            }
+          }
         );
 
+        const composedSplit = splitFollowUps(composed);
         send({
           done: true,
-          answer: composed.trim(),
+          answer: composedSplit.answer,
+          followUps: composedSplit.followUps,
           visualContext: { ...visualContext, queried: true },
         });
       } catch (err) {
@@ -560,8 +634,49 @@ app.post("/api/chat/visual", async (req, res) => {
       return res.end();
     }
 
-    const answer = await provider.complete(request);
-    res.json({ answer: answer.trim(), chart: null, visualContext });
+    // Providers without streaming (currently Anthropic and Gemini) land here.
+    // They get the same system prompt, so they emit the same markers, and must
+    // therefore get the same handling — otherwise a clarifying question reaches
+    // the user as raw JSON purely because of which model is configured.
+    const raw = await provider.complete(request);
+
+    const clarifyPlain = findClarify(raw);
+    if (clarifyPlain) {
+      const questions = parseClarify(clarifyPlain.payload);
+      return res.json({
+        answer:
+          clarifyPlain.lead ||
+          (questions.length > 1
+            ? "A couple of things would change the answer:"
+            : questions[0].ask),
+        questions,
+        chart: null,
+        clarify: true,
+        visualContext,
+      });
+    }
+
+    // Escalation needs the streaming plumbing, so on these providers the
+    // request is answered from the screen instead — but the marker itself must
+    // never be shown.
+    if (/^\s*NEED_DATA:/i.test(raw)) {
+      return res.json({
+        answer:
+          `That needs figures this page doesn't show, and I can't query the ` +
+          `model on the currently configured provider. Switching to an ` +
+          `OpenAI-compatible model enables it.`,
+        chart: null,
+        visualContext,
+      });
+    }
+
+    const plain = splitFollowUps(raw);
+    res.json({
+      answer: plain.answer,
+      chart: null,
+      followUps: plain.followUps,
+      visualContext,
+    });
   } catch (err) {
     res.status(502).json({ error: `Visual analysis failed: ${err.message}` });
   }
@@ -630,12 +745,17 @@ app.post("/api/chat", async (req, res) => {
     // measure, filter or period. Return the question it asked instead of
     // querying — a wrong number presented confidently is worse than a
     // one-line clarification.
-    if (/^\s*CLARIFY:/i.test(dax)) {
-      const questions = parseClarify(dax);
+    const clarifyInDax = findClarify(dax);
+    if (clarifyInDax) {
+      const questions = parseClarify(clarifyInDax.payload);
       return res.json({
         // A comparison usually leaves several things open, so each open axis
         // comes back as its own question with suggested answers.
-        answer: questions.length > 1 ? "A couple of things would change the answer:" : questions[0].ask,
+        answer:
+          clarifyInDax.lead ||
+          (questions.length > 1
+            ? "A couple of things would change the answer:"
+            : questions[0].ask),
         questions,
         chart: null,
         clarify: true,
@@ -643,6 +763,32 @@ app.post("/api/chat", async (req, res) => {
     }
   } catch (err) {
     return res.status(502).json({ error: `LLM DAX generation failed: ${err.message}` });
+  }
+
+  // A query can be perfectly valid and still answer a different question —
+  // "top 10 genres in 2016" returning all-time totals runs fine and reads as
+  // an answer. The engine will never complain, so check before running it.
+  try {
+    const issues = groundingIssues(question, dax);
+    if (issues.length) {
+      console.error("[grounding]", issues.join("; "));
+      dax = await generateDax([
+        ...priorTurns,
+        { role: "user", content: question },
+        { role: "assistant", content: dax },
+        {
+          role: "user",
+          content:
+            `That query does not answer the question: ${issues.join("; ")}.\n\n` +
+            `Apply the filter as a real filter — through the model's date ` +
+            `dimension where it is a period — rather than naming a column ` +
+            `after it. Return ONLY the corrected query.`,
+        },
+      ]);
+    }
+  } catch (err) {
+    // The first query is still runnable; a failed correction shouldn't lose it.
+    console.error("[grounding] correction failed:", err.message);
   }
 
   // Run the query, and on a Power BI rejection give the model one chance to
@@ -695,6 +841,7 @@ app.post("/api/chat", async (req, res) => {
 
   let answer = "";
   let chart = null;
+  let followUps = [];
   try {
     const raw = await provider.complete({
       system:
@@ -702,7 +849,11 @@ app.post("/api/chat", async (req, res) => {
         `You are a data analyst presenting findings to a business audience. ` +
         `You are given a question and the raw result rows (JSON) from a Power ` +
         `BI query. Respond with ONLY a JSON object of the form:\n` +
-        `{"answer": "<your analysis, as markdown>", "chart": {"type": "column"|"bar"|"line"|"pie"|"card"|"table"|"variance", "labels": [...], "unit": "<e.g. $K, tickets>", "values": [...], "label": "<caption>"} | null}\n\n` +
+        `{"answer": "<your analysis, as markdown>", "chart": {"type": "column"|"bar"|"line"|"pie"|"card"|"table"|"variance", "labels": [...], "unit": "<e.g. $K, tickets>", "values": [...], "label": "<caption>"} | null, "followUps": ["<question>", "<question>", "<question>"]}\n\n` +
+        `"followUps" are three questions this answer naturally leads to, each ` +
+        `answerable from this same report and under nine words. Prefer ones ` +
+        `that go somewhere new — a breakdown, a comparison, a cause — rather ` +
+        `than a restatement of what you just said. Always include them.\n\n` +
         `Charts follow IBCS notation. When you have more than one scenario, ` +
         `use "series" instead of "values", tagging each one:\n` +
         `"series": [{"name":"2016","scenario":"AC","values":[...]},{"name":"2015","scenario":"PY","values":[...]}]\n` +
@@ -776,6 +927,7 @@ app.post("/api/chat", async (req, res) => {
     const parsed = JSON.parse(stripCodeFence(raw));
     answer = parsed.answer ?? "";
     chart = parsed.chart ?? null;
+    followUps = Array.isArray(parsed.followUps) ? parsed.followUps.slice(0, 3) : [];
   } catch (err) {
     // Fall back to raw text rather than 500ing — the DAX + rows already
     // succeeded, so surface something useful.
@@ -784,7 +936,7 @@ app.post("/api/chat", async (req, res) => {
       : `LLM answer generation failed: ${err.message}`;
   }
 
-  const result = { answer, chart, dax, rowCount };
+  const result = { answer, chart, dax, rowCount, followUps };
   if (priorTurns.length === 0) llmCache.set(reportId, question, result);
   res.json(result);
 });

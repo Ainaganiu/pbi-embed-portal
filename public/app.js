@@ -513,6 +513,41 @@
   }
 
   let daxCounter = 0;
+  let clarifyCounter = 0;
+
+  // Three questions the answer leads to, offered as one-click chips. Every
+  // answer ends with them: the hard part of using a report you didn't build is
+  // knowing what to ask next, and the model has just read the data, so it is
+  // better placed to suggest that than the user is.
+  function renderFollowUps(bubble, followUps) {
+    const list = (followUps || []).filter((q) => typeof q === "string" && q.trim());
+    if (!list.length) return;
+
+    const wrap = document.createElement("div");
+    wrap.className = "followups";
+
+    const label = document.createElement("div");
+    label.className = "followups-label";
+    label.textContent = "Ask next";
+    wrap.appendChild(label);
+
+    const chips = document.createElement("div");
+    chips.className = "followup-chips";
+    list.forEach((q) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "suggestion";
+      chip.textContent = q;
+      chip.addEventListener("click", () => {
+        if (!currentReportId) return;
+        askQuestion(q);
+      });
+      chips.appendChild(chip);
+    });
+
+    wrap.appendChild(chips);
+    bubble.appendChild(wrap);
+  }
 
   // An ambiguous question comes back as one or more questions with suggested
   // answers. Rendering them as chips means a comparison can be pinned down in
@@ -523,7 +558,11 @@
     // shows it, so there's nothing to add.
     if (!questions.length || (questions.length === 1 && !questions[0].options.length)) return;
 
-    const picked = new Map();
+    // One set of answers per question. A "multi" question keeps several, so
+    // "which measures?" can be answered with all three at once instead of
+    // three round trips.
+    const picked = questions.map(() => new Set());
+    const groupName = `clarify-${++clarifyCounter}`;
     const wrap = document.createElement("div");
     wrap.className = "clarify-questions";
 
@@ -532,33 +571,73 @@
       block.className = "clarify-q";
 
       // With one question the bubble text already asks it; repeating it reads
-      // like a stutter.
-      if (questions.length > 1) {
+      // like a stutter — unless that text is the model's reasoning for asking,
+      // in which case the question itself still has to appear.
+      if (questions.length > 1 || result.answer !== q.ask) {
         const label = document.createElement("div");
         label.className = "clarify-ask";
         label.textContent = q.ask;
+        if (q.multi) {
+          const hint = document.createElement("span");
+          hint.className = "clarify-hint";
+          hint.textContent = "tick all that apply";
+          label.appendChild(hint);
+        }
         block.appendChild(label);
       }
 
       const opts = document.createElement("div");
       opts.className = "clarify-options";
-      q.options.forEach((opt) => {
-        const chip = document.createElement("button");
-        chip.type = "button";
-        chip.className = "suggestion";
-        chip.textContent = opt;
-        chip.addEventListener("click", () => {
-          picked.set(i, opt);
-          opts.querySelectorAll(".suggestion").forEach((c) => c.classList.remove("chosen"));
-          chip.classList.add("chosen");
-          submit.disabled = false;
+
+      q.options.forEach((opt, j) => {
+        // A checkbox where several answers are allowed, a radio where only one
+        // is: the control itself tells the user which, so nobody has to guess
+        // whether a second tick will replace the first.
+        const id = `${groupName}-${i}-${j}`;
+        const label = document.createElement("label");
+        label.className = "clarify-option";
+        label.htmlFor = id;
+
+        const input = document.createElement("input");
+        input.type = q.multi ? "checkbox" : "radio";
+        input.id = id;
+        input.name = `${groupName}-${i}`;
+
+        input.addEventListener("change", () => {
+          if (!q.multi) picked[i].clear();
+          if (input.checked) picked[i].add(opt);
+          else picked[i].delete(opt);
+          label.classList.toggle("chosen", input.checked);
+          if (!q.multi) {
+            opts.querySelectorAll(".clarify-option").forEach((l) => {
+              if (l !== label) l.classList.remove("chosen");
+            });
+          }
+          refreshSubmit();
         });
-        opts.appendChild(chip);
+
+        const text = document.createElement("span");
+        text.textContent = opt;
+
+        label.appendChild(input);
+        label.appendChild(text);
+        opts.appendChild(label);
       });
 
       block.appendChild(opts);
       wrap.appendChild(block);
     });
+
+    // Every question needs an answer before the round trip is worth making —
+    // sending a half-answered set just earns another clarification.
+    function refreshSubmit() {
+      const answered = picked.filter((set) => set.size).length;
+      submit.disabled = answered === 0;
+      submit.textContent =
+        answered < questions.length
+          ? `Continue (${answered} of ${questions.length})`
+          : "Continue";
+    }
 
     const actions = document.createElement("div");
     actions.className = "clarify-actions";
@@ -580,10 +659,10 @@
       // Only the chosen values, not the questions. Echoing "Compare against
       // what? Year over year" reads as another question and the model asks
       // again instead of answering.
-      const answers = questions
-        .map((q, i) => (picked.has(i) ? picked.get(i) : null))
+      const answers = picked
+        .map((set) => [...set].join(" and "))
         .filter(Boolean)
-        .join(", ");
+        .join("; ");
 
       // Resend the original question with the answers attached rather than
       // relying on history — this still resolves if the transcript was
@@ -748,6 +827,10 @@
       });
     }
 
+    // Last, under everything else — a clarifying question is already asking
+    // something, so suggesting three more on top of it would just compete.
+    if (!result.clarify) renderFollowUps(bubble, result.followUps);
+
     chatLog.scrollTop = chatLog.scrollHeight;
   }
 
@@ -837,7 +920,17 @@
     }
 
     if (!final) throw new Error("The response ended unexpectedly.");
-    return { answer: final.answer || text, chart: null, visualContext: final.visualContext };
+    // The final frame is authoritative: the streamed text is what was safe to
+    // show as it arrived, and carries neither the clarifying questions nor the
+    // follow-ups, both of which are stripped out of the stream.
+    return {
+      answer: final.answer || text,
+      chart: null,
+      questions: final.questions,
+      clarify: final.clarify,
+      followUps: final.followUps,
+      visualContext: final.visualContext,
+    };
   }
 
   async function runAnswer(row, question) {

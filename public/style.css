@@ -1145,6 +1145,32 @@ button {
   background: var(--accent-soft);
 }
 
+/* follow-ups — where to go next, under every answer */
+
+.followups {
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+
+.followups-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.followup-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.followup-chips .suggestion {
+  text-align: left;
+}
+
 /* clarifying question — a prompt back to the user, not a finding */
 
 .chat-row.assistant .chat-bubble.clarify {
@@ -1275,10 +1301,56 @@ button {
   color: var(--text);
 }
 
+.clarify-hint {
+  margin-left: 0.4rem;
+  font-weight: 400;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
 .clarify-options {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
+}
+
+/* A tickable answer. The native control is kept — it carries the keyboard
+   behaviour and the checkbox/radio distinction that tells the user whether a
+   second tick adds to the first or replaces it. */
+
+.clarify-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 0.32rem 0.7rem 0.32rem 0.55rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.clarify-option:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.clarify-option input {
+  margin: 0;
+  width: 0.82rem;
+  height: 0.82rem;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex: none;
+}
+
+.clarify-option.chosen {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
 }
 
 .clarify-options .suggestion.chosen {
