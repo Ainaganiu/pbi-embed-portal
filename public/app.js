@@ -22,6 +22,7 @@
 
   let reports = [];
   let currentReportId = null;
+  let starterRequestSeq = 0; // guards against a slow starters fetch landing after a later switch
   let embeddedReport = null; // powerbi-client Report, for reading live state
 
   // A ceiling on an in-panel chart, not its height: the renderer sizes from
@@ -273,10 +274,14 @@
     closeChat();
     resetChatLog();
     loadHistory(id);
-    loadStarters(id);
     if (history.length) {
       hideEmptyState();
       replayHistory();
+    } else if (hasChat) {
+      // Otherwise there's an existing transcript to show instead, and the
+      // empty state (where the starters live) never appears — fetching them
+      // would be a real provider call spent on something never shown.
+      loadStarters(id);
     }
 
     if (!powerbiService) {
@@ -391,15 +396,24 @@
 
   // Generated from the report's own schema, so the empty panel is useful on
   // first open rather than offering the same four prompts everywhere.
+  //
+  // The fetch is a real LLM call the first time a report is asked (the
+  // server caches after that), so it runs a request-token check before
+  // touching the DOM: a fast switch away — or back — while this is in
+  // flight must not paint another report's questions, or double up on its
+  // own report's.
   async function loadStarters(reportId) {
     const host = document.getElementById("chat-suggestions");
     host.innerHTML = "";
+    const seq = ++starterRequestSeq;
     let starters = [];
     try {
       starters = (await fetchJson(`/api/chat/starters/${encodeURIComponent(reportId)}`)).starters || [];
     } catch {
       return; // the panel is still usable without them
     }
+    if (seq !== starterRequestSeq) return; // a later call has since taken over this panel
+    host.innerHTML = "";
     starters.forEach((q) => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -424,6 +438,9 @@
     history = [];
     if (currentReportId) {
       try { localStorage.removeItem(historyKey(currentReportId)); } catch { /* ignore */ }
+      // Clearing brings the empty state back, and a report reached only
+      // through history at select time never got its starters fetched.
+      loadStarters(currentReportId);
     }
     resetChatLog();
   }
