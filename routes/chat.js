@@ -78,8 +78,15 @@ router.post("/", async (req, res) => {
   // The client aborts the fetch when the user presses stop. Checking this
   // before each provider and Power BI call is what makes stopping stop the
   // spending, rather than only hiding the result.
+  //
+  // It has to be the RESPONSE, not the request: `req` emits "close" once the
+  // body has been fully read, which express.json() does before this handler
+  // ever runs, so a listener here would never fire and every aborted() check
+  // in every pipeline would be dead. `res` emits "close" on disconnect. It
+  // also emits it after a normal res.end(), which is harmless -- by then the
+  // pipeline has returned and nothing reads the flag again.
   let cancelled = false;
-  req.on("close", () => { cancelled = true; });
+  res.on("close", () => { cancelled = true; });
   const aborted = () => cancelled;
 
   let route;
