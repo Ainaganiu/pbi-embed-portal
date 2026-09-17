@@ -21,7 +21,7 @@
 // Entry point: renderChart(container, spec, { width, height }).
 //
 //   spec = {
-//     type: "bar" | "column" | "line" | "pie" | "card" | "table" | "variance",
+//     type: "bar" | "column" | "line" | "donut" | "card" | "table" | "variance",
 //     labels: [...],
 //     unit: "$K",
 //     // either a flat series…
@@ -462,9 +462,15 @@
       .attr("stroke", INK);
   }
 
-  // ---- pie: kept for parts-of-a-whole, in greyscale ------------------------
+  // ---- donut: parts of a whole, in greyscale -------------------------------
+  //
+  // A ring rather than a filled circle: the hole removes the centre, where
+  // angle differences are hardest to judge, and leaves the arc length doing
+  // the work. Still the last resort -- a bar is easier to read -- so it is
+  // chosen only where the question is genuinely about a share of a whole.
+  // "pie" stays as an alias so answers already in a transcript still draw.
 
-  function renderPie(container, spec, width, height) {
+  function renderDonut(container, spec, width, height) {
     const data = spec.labels.map((l, i) => ({
       label: String(l),
       value: +(spec.values ? spec.values[i] : seriesOf(spec)[0].values[i]) || 0,
@@ -612,7 +618,8 @@
     bar: renderBar,
     column: renderColumn,
     line: renderLine,
-    pie: renderPie,
+    donut: renderDonut,
+    pie: renderDonut,
     card: renderCard,
     table: renderTable,
     variance: renderVariance,

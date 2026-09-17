@@ -14,6 +14,7 @@ const adminRouter = require("./routes/admin");
 const authoringRouter = require("./routes/authoring");
 const { CORE_RULES } = require("./lib/daxSkills");
 const { lintDax, groundingIssues } = require("./lib/daxLint");
+const { chooseChartType } = require("./lib/chartChoice");
 const {
   problemContext,
   sanitizeHistory,
@@ -849,7 +850,7 @@ app.post("/api/chat", async (req, res) => {
         `You are a data analyst presenting findings to a business audience. ` +
         `You are given a question and the raw result rows (JSON) from a Power ` +
         `BI query. Respond with ONLY a JSON object of the form:\n` +
-        `{"answer": "<your analysis, as markdown>", "chart": {"type": "column"|"bar"|"line"|"pie"|"card"|"table"|"variance", "labels": [...], "unit": "<e.g. $K, tickets>", "values": [...], "label": "<caption>"} | null, "followUps": ["<question>", "<question>", "<question>"]}\n\n` +
+        `{"answer": "<your analysis, as markdown>", "chart": {"type": "column"|"bar"|"line"|"donut"|"card"|"table"|"variance", "labels": [...], "unit": "<e.g. $K, tickets>", "values": [...], "label": "<caption>"} | null, "followUps": ["<question>", "<question>", "<question>"]}\n\n` +
         `"followUps" are three questions this answer naturally leads to, each ` +
         `answerable from this same report and under nine words. Prefer ones ` +
         `that go somewhere new — a breakdown, a comparison, a cause — rather ` +
@@ -883,29 +884,29 @@ app.post("/api/chat", async (req, res) => {
         `trend rests on very few points, or the question can't be fully ` +
         `answered from these rows, say so plainly instead of overstating it. ` +
         `Never state a number that is not present in the rows.\n\n` +
-        `Pick the chart type that fits the data:\n` +
-        `- "card": a single headline number (e.g. a total or a count). Put ` +
-        `the number in values as a one-element array and a short caption in ` +
-        `"label"; "labels" may be omitted.\n` +
-        `- "bar": comparing a measure across categories.\n` +
-        `- "line": a trend over time or an ordered sequence.\n` +
-        `- "column": vertical columns, for a measure over TIME (years, ` +
-        `months, quarters).\n` +
-        `- "bar": horizontal bars, for comparing STRUCTURE — categories, ` +
-        `products, regions, publishers. IBCS reserves vertical for time, so ` +
-        `don't use "column" for a category breakdown.\n` +
-        `- "variance": the deviation itself, when the question is about change ` +
-        `or a gap. Give AC and PY series and it draws the difference from a ` +
-        `zero line, green where positive and red where negative.\n` +
-        `- "pie": parts of a whole, only when there are 2-8 categories that ` +
-        `sum to a meaningful total. Prefer "bar" — it is easier to read.\n` +
-        `- "table": when the values themselves are the point — more than one ` +
-        `number per item (e.g. this year beside last year, or a count beside ` +
-        `a percentage), or too many rows to read off a chart. Use "columns" ` +
-        `and "rows" for the multi-column case.\n` +
+        `Choosing the chart type — work down this list and take the FIRST ` +
+        `rule that applies. One rule underpins all of it: vertical is for ` +
+        `TIME, horizontal is for STRUCTURE. Never use one for the other.\n` +
+        `1. One row with one number -> "card". Put the number in values as a ` +
+        `one-element array and a short caption in "label"; omit "labels".\n` +
+        `2. Two or more measures per item (this year beside last year, a ` +
+        `count beside a percentage) -> "table". Use "columns" and "rows" for ` +
+        `the multi-column case.\n` +
+        `3. The categories are periods (years, quarters, months, dates):\n` +
+        `   - seven or more periods -> "line", the trend is the message;\n` +
+        `   - fewer than seven -> "column", vertical, one per period.\n` +
+        `4. The question is about a change or a gap, and you have both an ` +
+        `actual and a comparison -> "variance". Give AC and PY series and it ` +
+        `draws the difference from a zero line, green where positive and red ` +
+        `where negative. Plot the difference, not the two totals.\n` +
+        `5. The question is about a share, split or mix, over 2 to 6 ` +
+        `categories that sum to a meaningful whole -> "donut".\n` +
+        `6. Anything else comparing a measure across categories -> "bar", ` +
+        `horizontal. This is the default; above about 12 categories it is the ` +
+        `only readable option, because column labels collide.\n` +
         `Use null only when the answer is genuinely not numeric (e.g. yes/no ` +
         `or a plain text explanation). "labels" and "values" must be the ` +
-        `same length for bar, line and pie. Do not include markdown fences.`,
+        `same length for bar, line and donut. Do not include markdown fences.`,
       messages: [
         {
           role: "user",
@@ -928,6 +929,21 @@ app.post("/api/chat", async (req, res) => {
     answer = parsed.answer ?? "";
     chart = parsed.chart ?? null;
     followUps = Array.isArray(parsed.followUps) ? parsed.followUps.slice(0, 3) : [];
+
+    // The shape of the result decides the chart in the cases that have one
+    // right answer — a single number is a card however the question was
+    // phrased, and time goes on a vertical axis whatever the model suggests.
+    // Everything else is left to its judgement, which is where the question's
+    // wording genuinely matters. See lib/chartChoice.js.
+    const choice = chooseChartType(question, rows);
+    if (chart && choice.fixed && choice.type && chart.type !== choice.type) {
+      console.error(
+        `[chart] overriding "${chart.type}" with "${choice.type}" — ${choice.reason}`
+      );
+      chart.type = choice.type;
+    } else if (chart && !chart.type && choice.type) {
+      chart.type = choice.type;
+    }
   } catch (err) {
     // Fall back to raw text rather than 500ing — the DAX + rows already
     // succeeded, so surface something useful.
