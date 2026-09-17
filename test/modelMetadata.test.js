@@ -29,6 +29,7 @@ const RAW = {
   ],
   relationships: [
     { "[Rel]": "'DataTable'[Date Received] *[<-]1 'Date'[Date]", "[IsActive]": true, "[FromTable]": "DataTable", "[ToTable]": "Date" },
+    { "[Rel]": "'DataTable'[Date Received] *[<-]1 'LocalDateTable_abc123'[Date]", "[IsActive]": true, "[FromTable]": "DataTable", "[ToTable]": "LocalDateTable_abc123" },
   ],
 };
 
@@ -71,6 +72,11 @@ test("a relationship keeps Power BI's own rendering verbatim", () => {
   const got = normalise(RAW);
   assert.equal(got.relationships[0].text, "'DataTable'[Date Received] *[<-]1 'Date'[Date]");
   assert.equal(got.relationships[0].isActive, true);
+});
+
+test("a relationship pointing at an auto-date table is dropped", () => {
+  const got = normalise(RAW);
+  assert.deepEqual(got.relationships.map((r) => r.toTable), ["Date"]);
 });
 
 test("missing sections normalise to empty arrays rather than throwing", () => {
