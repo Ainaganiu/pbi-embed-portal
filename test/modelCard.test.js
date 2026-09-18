@@ -69,6 +69,11 @@ test("a reference to something that does not exist is reported", () => {
   assert.deepEqual(got.unknownReferences, ["Total Sales"]);
 });
 
+test("a bare-bracketed table name is not reported as unknown", () => {
+  const got = reconcile(META, { schemaDescription: "All facts live in [DataTable]." });
+  assert.deepEqual(got.unknownReferences, []);
+});
+
 test("prose matching no object is preserved as notes", () => {
   const got = reconcile(META, { schemaDescription: "SLA is four hours for priority tickets." });
   assert.deepEqual(got.notes, ["SLA is four hours for priority tickets."]);
@@ -134,6 +139,11 @@ test("a reference to something that does not exist never reaches the card", () =
 test("leftover prose is kept as notes", () => {
   const card = render(META, { schemaDescription: "SLA is four hours for priority tickets." });
   assert.match(card, /SLA is four hours/);
+});
+
+test("a note naming a real table in brackets is kept, not dropped as unknown", () => {
+  const card = render(META, { schemaDescription: "All facts live in [DataTable]." });
+  assert.match(card, /All facts live in \[DataTable\]/);
 });
 
 test("no metadata renders nothing, so the caller can fall back", () => {
