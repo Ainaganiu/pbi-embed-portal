@@ -15,7 +15,8 @@ const {
   listWorkspaces,
   listReports,
 } = require("../lib/powerbi");
-const { fetchModelMetadata } = require("../lib/modelMetadata");
+const { fetchModelMetadata, mergeDefinition } = require("../lib/modelMetadata");
+const { fetchModelDefinition } = require("../lib/modelDefinition");
 const { reconcile } = require("../lib/modelCard");
 
 const router = express.Router();
@@ -139,22 +140,33 @@ router.post("/reports/:id/sync-model", async (req, res) => {
   }
 
   const settings = await getSettings();
-  const metadata = await fetchModelMetadata(
-    {
-      tenantId: settings.pbiTenantId,
-      clientId: settings.pbiClientId,
-      clientSecret: settings.pbiClientSecret,
-    },
-    { workspaceId: report.workspaceId, datasetId: report.datasetId }
-  );
+  const credentials = {
+    tenantId: settings.pbiTenantId,
+    clientId: settings.pbiClientId,
+    clientSecret: settings.pbiClientSecret,
+  };
+
+  const rawMetadata = await fetchModelMetadata(credentials, {
+    workspaceId: report.workspaceId,
+    datasetId: report.datasetId,
+  });
 
   // Deliberately not written: a failed refresh must not leave the report
   // worse off than it was before someone pressed the button.
-  if (!metadata) {
+  if (!rawMetadata) {
     return res.status(502).json({
       error: "Couldn't read this model's metadata. The service principal may not have access to it.",
     });
   }
+
+  // Best-effort: no Fabric permission, a non-Fabric-capacity workspace, or
+  // an LRO that times out must not fail a sync whose INFO.VIEW read already
+  // succeeded -- that result is worth keeping on its own.
+  const definition = await fetchModelDefinition(credentials, {
+    workspaceId: report.workspaceId,
+    datasetId: report.datasetId,
+  });
+  const metadata = mergeDefinition(rawMetadata, definition);
 
   const saved = await setModelMetadata(report.id, metadata);
   const { described, undescribed, unknownReferences } = reconcile(metadata, saved);
@@ -166,6 +178,8 @@ router.post("/reports/:id/sync-model", async (req, res) => {
       measures: metadata.measures.length,
       columns: metadata.columns.length,
       relationships: metadata.relationships.length,
+      measuresWithExpression: metadata.measures.filter((m) => m.expression).length,
+      calculatedColumnsWithExpression: metadata.columns.filter((c) => c.expression).length,
     },
     reconciliation: {
       describedCount: described.length,
