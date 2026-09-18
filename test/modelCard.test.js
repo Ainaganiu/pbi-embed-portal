@@ -198,7 +198,79 @@ test("a measure with a real expression shows it under its name, above the descri
 
 test("a measure with no expression renders exactly as before -- no blank formula line", () => {
   const card = render(META, { measuresDescription: "[1_ Total Interactions] counts every ticket." });
-  assert.ok(!card.includes("= "), "no expression means no '= ...' line at all");
+  assert.ok(!card.split("\n").some((line) => line.startsWith("      = ")));
+});
+
+test("a multi-line expression renders each line indented, only the first prefixed with '= '", () => {
+  const withExpr = {
+    ...META,
+    measures: META.measures.map((m) =>
+      m.name === "1_ Total Interactions"
+        ? { ...m, expression: "VAR a = SUM(T[X])\nVAR b = SUM(T[Y])\nRETURN DIVIDE(a, b)" }
+        : m
+    ),
+  };
+  const card = render(withExpr, {});
+  const lines = card.split("\n");
+  const firstIdx = lines.findIndex((l) => l === "      = VAR a = SUM(T[X])");
+  assert.ok(firstIdx !== -1, "first line is prefixed with '= '");
+  assert.equal(lines[firstIdx + 1], "      VAR b = SUM(T[Y])");
+  assert.equal(lines[firstIdx + 2], "      RETURN DIVIDE(a, b)");
+});
+
+test("an expression longer than 600 characters is clipped with a trailing ellipsis", () => {
+  const longExpr = "SUM(T[X])".padEnd(650, "Z");
+  const withExpr = {
+    ...META,
+    measures: META.measures.map((m) =>
+      m.name === "1_ Total Interactions" ? { ...m, expression: longExpr } : m
+    ),
+  };
+  const card = render(withExpr, {});
+  assert.ok(!card.includes(longExpr), "the full unclipped expression must not appear in the card");
+  assert.ok(card.includes(`${longExpr.slice(0, 600)}…`), "the clipped form, with a trailing ellipsis, must appear");
+});
+
+test("MEASURES and COLUMNS are independently budgeted -- a measure-heavy model does not swallow the columns", () => {
+  // 239 small measures fill most of the card's budget, then 5 oversized
+  // "blocker" measures (each near the per-expression clip) push past it --
+  // enough to force at least one measure to be omitted -- while still
+  // leaving comfortable headroom for a handful of ordinary columns. Sizes
+  // verified empirically against the real budget in lib/budgets.js so this
+  // isn't a coincidence of one particular BUDGETS value.
+  const makeName = (i) => `M${String(i).padStart(3, "0")}`;
+  const smallExpression = "X".repeat(20);
+  const bigExpression = "X".repeat(650);
+
+  const measures = [];
+  for (let i = 0; i < 239; i++) {
+    measures.push({ name: makeName(i), table: "T", dataType: "Integer", formatString: null, expression: smallExpression, description: null });
+  }
+  for (let i = 0; i < 5; i++) {
+    measures.push({ name: `Blocker${i}`, table: "T", dataType: "Integer", formatString: null, expression: bigExpression, description: null });
+  }
+
+  const columns = Array.from({ length: 5 }, (_, i) => ({
+    name: `Column Number ${i}`,
+    table: "T",
+    dataType: "Text",
+    formatString: null,
+    summarizeBy: "None",
+    description: null,
+  }));
+
+  const many = {
+    tables: [{ name: "T", storageMode: "Import", dataCategory: "Regular" }],
+    measures,
+    columns,
+    relationships: [],
+  };
+  const card = render(many, {});
+  assert.match(card, /\(\d+ further measures omitted\.\)/);
+  for (let i = 0; i < 5; i++) {
+    assert.match(card, new RegExp(`Column Number ${i}\\b`));
+  }
+  assert.ok(!/further columns omitted/i.test(card), "columns must not be dropped because measures used the budget");
 });
 
 test("a calculated column's expression renders the same way", () => {

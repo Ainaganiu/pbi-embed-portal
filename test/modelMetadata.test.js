@@ -236,6 +236,51 @@ test("an object present in metadata but absent from the definition keeps its nul
   assert.equal(got.columns[0].expression, null);
 });
 
+test("a colliding pair (two relationships sharing the same table pair) gets no overlay at all", () => {
+  const metadataWithCollision = {
+    ...METADATA,
+    relationships: [
+      { text: "'Data'[OrderDate] *[<-]1 'Date'[Date]", isActive: true, fromTable: "Data", toTable: "Date", crossFilteringBehavior: null },
+    ],
+  };
+  const definition = {
+    measures: [],
+    columns: [],
+    relationships: [
+      { fromTable: "Data", toTable: "Date", isActive: true, crossFilteringBehavior: "BothDirections" },
+      { fromTable: "Data", toTable: "Date", isActive: true, crossFilteringBehavior: null },
+    ],
+  };
+  const got = mergeDefinition(metadataWithCollision, definition);
+  assert.equal(
+    got.relationships[0].crossFilteringBehavior,
+    null,
+    "a colliding table pair must not be tagged with either of the colliding values -- silence beats a confident wrong tag"
+  );
+});
+
+test("a non-colliding pair still gets overlaid normally alongside a colliding one elsewhere", () => {
+  const metadataWithBoth = {
+    ...METADATA,
+    relationships: [
+      { text: "'Data'[OrderDate] *[<-]1 'Date'[Date]", isActive: true, fromTable: "Data", toTable: "Date", crossFilteringBehavior: null },
+      { text: "'Other'[X] *[<-]1 'OtherDate'[Date]", isActive: true, fromTable: "Other", toTable: "OtherDate", crossFilteringBehavior: null },
+    ],
+  };
+  const definition = {
+    measures: [],
+    columns: [],
+    relationships: [
+      { fromTable: "Data", toTable: "Date", isActive: true, crossFilteringBehavior: "BothDirections" },
+      { fromTable: "Data", toTable: "Date", isActive: true, crossFilteringBehavior: null },
+      { fromTable: "Other", toTable: "OtherDate", isActive: true, crossFilteringBehavior: "BothDirections" },
+    ],
+  };
+  const got = mergeDefinition(metadataWithBoth, definition);
+  assert.equal(got.relationships[0].crossFilteringBehavior, null, "the colliding pair stays unchanged");
+  assert.equal(got.relationships[1].crossFilteringBehavior, "BothDirections", "the non-colliding pair is still overlaid normally");
+});
+
 test("mergeDefinition never mutates its inputs", () => {
   const definition = {
     measures: [{ name: "Number of Console", expression: "DISTINCTCOUNT(Data[Console])" }],

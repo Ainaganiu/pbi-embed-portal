@@ -211,9 +211,67 @@ test("relationships carry crossFilteringBehavior and a defaulted isActive", asyn
   ]);
   const got = await fetchModelDefinition(CREDENTIALS, { workspaceId: "w1", datasetId: "d1" });
   assert.deepEqual(got.relationships, [
-    { fromTable: "Data", fromColumn: "Date", toTable: "Date", toColumn: "Date", isActive: true, crossFilteringBehavior: "BothDirections" },
-    { fromTable: "Date", fromColumn: "Date", toTable: "LocalDateTable_x", toColumn: "Date", isActive: false, crossFilteringBehavior: null },
+    { fromTable: "Data", toTable: "Date", isActive: true, crossFilteringBehavior: "BothDirections" },
+    { fromTable: "Date", toTable: "LocalDateTable_x", isActive: false, crossFilteringBehavior: null },
   ]);
+});
+
+test("a multi-line (array-form) expression is newline-joined, not comma-joined", async () => {
+  const bimWithArrayExpr = {
+    model: {
+      tables: [
+        {
+          name: "Data",
+          measures: [
+            { name: "Var Measure", expression: ["VAR a = SUM(Data[X])", "RETURN a"] },
+          ],
+          columns: [],
+        },
+      ],
+      relationships: [],
+    },
+  };
+  const bimPartFor = (bim) => ({
+    definition: {
+      parts: [{ path: "model.bim", payload: Buffer.from(JSON.stringify(bim)).toString("base64") }],
+    },
+  });
+
+  global.fetch = queueFetch([
+    fakeResponse({ json: { access_token: "tok", expires_in: 3600 } }),
+    fakeResponse({ status: 200, json: bimPartFor(bimWithArrayExpr) }),
+  ]);
+  const got = await fetchModelDefinition(CREDENTIALS, { workspaceId: "w1", datasetId: "d1" });
+  assert.deepEqual(got.measures, [
+    { name: "Var Measure", expression: "VAR a = SUM(Data[X])\nRETURN a" },
+  ]);
+});
+
+test("an empty array-form expression is treated as absent, same as a falsy string", async () => {
+  const bimWithEmptyArrayExpr = {
+    model: {
+      tables: [
+        {
+          name: "Data",
+          measures: [{ name: "Empty Measure", expression: [] }],
+          columns: [],
+        },
+      ],
+      relationships: [],
+    },
+  };
+  const bimPartFor = (bim) => ({
+    definition: {
+      parts: [{ path: "model.bim", payload: Buffer.from(JSON.stringify(bim)).toString("base64") }],
+    },
+  });
+
+  global.fetch = queueFetch([
+    fakeResponse({ json: { access_token: "tok", expires_in: 3600 } }),
+    fakeResponse({ status: 200, json: bimPartFor(bimWithEmptyArrayExpr) }),
+  ]);
+  const got = await fetchModelDefinition(CREDENTIALS, { workspaceId: "w1", datasetId: "d1" });
+  assert.deepEqual(got.measures, []);
 });
 
 test("partitions, dataSources and roles never reach the returned shape", async () => {

@@ -389,13 +389,19 @@
       const r = await api(`/api/admin/reports/${encodeURIComponent(id)}/sync-model`, { method: "POST" });
       $("model-synced-at").textContent = `Last synced ${new Date(r.syncedAt).toLocaleString()}`;
 
+      const measuresWithExpression = r.counts.measuresWithExpression ?? 0;
+      const calculatedColumnsWithExpression = r.counts.calculatedColumnsWithExpression ?? 0;
       const rows = [
         `<div><strong>${r.counts.tables}</strong> tables, <strong>${r.counts.measures}</strong> measures, ` +
           `<strong>${r.counts.columns}</strong> columns, <strong>${r.counts.relationships}</strong> relationships.</div>`,
-        `<div>${r.counts.measuresWithExpression} of ${r.counts.measures} measures have real DAX read from the model.</div>`,
-        `<div>${r.counts.calculatedColumnsWithExpression} calculated column DAX definitions read from the model.</div>`,
-        `<div>${r.reconciliation.describedCount} described by your notes.</div>`,
       ];
+      if (measuresWithExpression || calculatedColumnsWithExpression) {
+        rows.push(
+          `<div>${measuresWithExpression} of ${r.counts.measures} measures have real DAX read from the model.</div>`,
+          `<div>${calculatedColumnsWithExpression} calculated column DAX definitions read from the model.</div>`
+        );
+      }
+      rows.push(`<div>${r.reconciliation.describedCount} described by your notes.</div>`);
       // The two lists worth acting on: what the AI will be told nothing
       // about, and what your notes claim exists but the model has never
       // heard of.

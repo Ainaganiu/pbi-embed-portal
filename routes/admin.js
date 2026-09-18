@@ -16,7 +16,7 @@ const {
   listReports,
 } = require("../lib/powerbi");
 const { fetchModelMetadata, mergeDefinition } = require("../lib/modelMetadata");
-const { fetchModelDefinition } = require("../lib/modelDefinition");
+const { fetchModelDefinition, clearFabricTokenCache } = require("../lib/modelDefinition");
 const { reconcile } = require("../lib/modelCard");
 
 const router = express.Router();
@@ -47,6 +47,7 @@ router.put("/settings", async (req, res) => {
   }
   await updateSettings(body);
   clearTokenCache();
+  clearFabricTokenCache();
   res.json({ ok: true });
 });
 
