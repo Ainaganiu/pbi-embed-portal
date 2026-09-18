@@ -81,3 +81,80 @@ test("no descriptions at all still returns a usable shape", () => {
   assert.deepEqual(got.unknownReferences, []);
   assert.deepEqual(got.notes, []);
 });
+
+const { render } = require("../lib/modelCard");
+
+test("the card names the tables, measures and columns exactly", () => {
+  const card = render(META, { measuresDescription: "[1_ Total Interactions] counts every ticket." });
+  assert.match(card, /'DataTable'/);
+  assert.match(card, /\[1_ Total Interactions\]/);
+  assert.match(card, /'DataTable'\[Interaction Type\]/);
+});
+
+test("a description is attached under the object it describes", () => {
+  const card = render(META, { measuresDescription: "[1_ Total Interactions] counts every ticket." });
+  const idx = card.indexOf("[1_ Total Interactions]");
+  const next = card.indexOf("[2_ Breaches]");
+  assert.ok(idx !== -1 && next !== -1 && idx < next);
+  assert.ok(
+    card.slice(idx, next).includes("counts every ticket"),
+    "the description must sit under its own object, not somewhere else in the card"
+  );
+});
+
+test("an undescribed object says so rather than going silent", () => {
+  const card = render(META, {});
+  assert.match(card, /no description/i);
+});
+
+test("a format string is shown where the author set one", () => {
+  const card = render(META, {});
+  assert.match(card, /format "0"/);
+});
+
+test("a relationship is reproduced exactly as Power BI rendered it", () => {
+  const withRel = {
+    ...META,
+    relationships: [
+      { text: "'DataTable'[Date Received] *[<-]1 'Date'[Date]", isActive: true, fromTable: "DataTable", toTable: "Date" },
+    ],
+  };
+  const card = render(withRel, {});
+  assert.ok(card.includes("'DataTable'[Date Received] *[<-]1 'Date'[Date]"));
+});
+
+test("a reference to something that does not exist never reaches the card", () => {
+  const card = render(META, { measuresDescription: "[Total Sales] is our headline number." });
+  assert.ok(
+    !card.includes("Total Sales"),
+    "repeating a name that is not in the model is exactly the behaviour this replaces"
+  );
+});
+
+test("leftover prose is kept as notes", () => {
+  const card = render(META, { schemaDescription: "SLA is four hours for priority tickets." });
+  assert.match(card, /SLA is four hours/);
+});
+
+test("no metadata renders nothing, so the caller can fall back", () => {
+  assert.equal(render(null, { schemaDescription: "anything" }), "");
+});
+
+test("a huge model is capped and says what it dropped", () => {
+  const many = {
+    tables: [{ name: "T", storageMode: "Import", dataCategory: "Regular" }],
+    measures: [],
+    columns: Array.from({ length: 5000 }, (_, i) => ({
+      name: `Column Number ${i}`,
+      table: "T",
+      dataType: "Text",
+      formatString: null,
+      summarizeBy: "None",
+      description: null,
+    })),
+    relationships: [],
+  };
+  const card = render(many, {});
+  assert.ok(card.length <= 20000);
+  assert.match(card, /further columns omitted/i);
+});

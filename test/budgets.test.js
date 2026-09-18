@@ -23,6 +23,7 @@ const EXPECTED = {
   MAX_TOKENS_ROUTER: 400,
   CHART_MAX_CATEGORIES: 18,
   CHART_TRUNCATE_TO: 15,
+  MODEL_CARD_CHARS: 20000,
 };
 
 test("every budget is present with the agreed value", () => {
