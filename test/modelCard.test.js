@@ -180,3 +180,65 @@ test("a huge model is capped and says what it dropped", () => {
   assert.ok(card.length <= 20000);
   assert.match(card, /further columns omitted/i);
 });
+
+test("a measure with a real expression shows it under its name, above the description", () => {
+  const withExpr = {
+    ...META,
+    measures: META.measures.map((m) =>
+      m.name === "1_ Total Interactions" ? { ...m, expression: "COUNTROWS(DataTable)" } : m
+    ),
+  };
+  const card = render(withExpr, { measuresDescription: "[1_ Total Interactions] counts every ticket." });
+  const nameIdx = card.indexOf("[1_ Total Interactions]");
+  const exprIdx = card.indexOf("= COUNTROWS(DataTable)");
+  const descIdx = card.indexOf("counts every ticket");
+  assert.ok(nameIdx !== -1 && exprIdx !== -1 && descIdx !== -1);
+  assert.ok(nameIdx < exprIdx && exprIdx < descIdx, "expression sits between the name/type line and the description");
+});
+
+test("a measure with no expression renders exactly as before -- no blank formula line", () => {
+  const card = render(META, { measuresDescription: "[1_ Total Interactions] counts every ticket." });
+  assert.ok(!card.includes("= "), "no expression means no '= ...' line at all");
+});
+
+test("a calculated column's expression renders the same way", () => {
+  const withCalc = {
+    ...META,
+    columns: [...META.columns, { name: "Year", table: "DataTable", dataType: "Int64", formatString: null, summarizeBy: "Sum", description: null, expression: "YEAR(DataTable[Date])" }],
+  };
+  const card = render(withCalc, {});
+  assert.ok(card.includes("= YEAR(DataTable[Date])"));
+});
+
+test("a bidirectional relationship gets a (bidirectional) tag", () => {
+  const withRel = {
+    ...META,
+    relationships: [
+      { text: "'DataTable'[X] *[<->]* 'Other'[Y]", isActive: true, fromTable: "DataTable", toTable: "Other", crossFilteringBehavior: "BothDirections" },
+    ],
+  };
+  const card = render(withRel, {});
+  assert.match(card, /\(bidirectional\)/);
+});
+
+test("an inactive AND bidirectional relationship shows both tags together", () => {
+  const withRel = {
+    ...META,
+    relationships: [
+      { text: "'DataTable'[X] *[<->]* 'Other'[Y]", isActive: false, fromTable: "DataTable", toTable: "Other", crossFilteringBehavior: "BothDirections" },
+    ],
+  };
+  const card = render(withRel, {});
+  assert.match(card, /\(inactive, bidirectional\)/);
+});
+
+test("a one-directional active relationship keeps rendering with no tag, as before", () => {
+  const withRel = {
+    ...META,
+    relationships: [
+      { text: "'DataTable'[X] *[<-]1 'Other'[Y]", isActive: true, fromTable: "DataTable", toTable: "Other", crossFilteringBehavior: null },
+    ],
+  };
+  const card = render(withRel, {});
+  assert.ok(card.includes("'DataTable'[X] *[<-]1 'Other'[Y]") && !card.includes("(inactive") && !card.includes("bidirectional"));
+});
