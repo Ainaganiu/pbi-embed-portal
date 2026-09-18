@@ -65,6 +65,7 @@ test("the fields the card needs survive normalisation", () => {
     formatString: "0",
     summarizeBy: "Count",
     description: null,
+    expression: null,
   });
 });
 
@@ -182,4 +183,65 @@ test("a successful read with zero tables resolves to null, not an empty-but-trut
 
   if (original) require.cache[full] = original;
   else delete require.cache[full];
+});
+
+const { mergeDefinition } = require("../lib/modelMetadata");
+
+const METADATA = {
+  tables: [{ name: "Data", storageMode: "Import", dataCategory: "Regular" }],
+  measures: [{ name: "Number of Console", table: "Data", dataType: "Integer", formatString: "0", expression: null, description: null }],
+  columns: [{ name: "Year", table: "Data", dataType: "Int64", formatString: "0", summarizeBy: "Sum", description: null, expression: null }],
+  relationships: [{ text: "'Data'[Date] *[<-]1 'Date'[Date]", isActive: true, fromTable: "Data", toTable: "Date", crossFilteringBehavior: null }],
+};
+
+test("a null definition leaves metadata completely unchanged", () => {
+  const got = mergeDefinition(METADATA, null);
+  assert.deepEqual(got, METADATA);
+});
+
+test("a measure's expression is overlaid by name match", () => {
+  const definition = {
+    measures: [{ name: "Number of Console", expression: "DISTINCTCOUNT(Data[Console])" }],
+    columns: [],
+    relationships: [],
+  };
+  const got = mergeDefinition(METADATA, definition);
+  assert.equal(got.measures[0].expression, "DISTINCTCOUNT(Data[Console])");
+});
+
+test("a calculated column's expression is overlaid by table+name match", () => {
+  const definition = {
+    measures: [],
+    columns: [{ name: "Year", table: "Data", expression: "YEAR(Data[Date])" }],
+    relationships: [],
+  };
+  const got = mergeDefinition(METADATA, definition);
+  assert.equal(got.columns[0].expression, "YEAR(Data[Date])");
+});
+
+test("a relationship's crossFilteringBehavior is overlaid by table-pair match", () => {
+  const definition = {
+    measures: [],
+    columns: [],
+    relationships: [{ fromTable: "Data", fromColumn: "Date", toTable: "Date", toColumn: "Date", isActive: true, crossFilteringBehavior: "BothDirections" }],
+  };
+  const got = mergeDefinition(METADATA, definition);
+  assert.equal(got.relationships[0].crossFilteringBehavior, "BothDirections");
+});
+
+test("an object present in metadata but absent from the definition keeps its null expression", () => {
+  const definition = { measures: [], columns: [], relationships: [] };
+  const got = mergeDefinition(METADATA, definition);
+  assert.equal(got.measures[0].expression, null);
+  assert.equal(got.columns[0].expression, null);
+});
+
+test("mergeDefinition never mutates its inputs", () => {
+  const definition = {
+    measures: [{ name: "Number of Console", expression: "DISTINCTCOUNT(Data[Console])" }],
+    columns: [],
+    relationships: [],
+  };
+  mergeDefinition(METADATA, definition);
+  assert.equal(METADATA.measures[0].expression, null, "the original metadata object must be untouched");
 });
