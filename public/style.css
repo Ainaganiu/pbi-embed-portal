@@ -1494,3 +1494,16 @@ button {
 .chart-card-value {
   color: #1a1a1a !important;
 }
+
+/* sync-from-model reconciliation report */
+
+.model-sync { display: flex; align-items: center; gap: 10px; }
+.model-report {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.model-report pre { white-space: pre-wrap; margin: 6px 0 0; font-size: 11px; }
+.model-report-warn { color: var(--text); font-weight: 600; margin-top: 6px; }

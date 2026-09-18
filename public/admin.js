@@ -238,6 +238,11 @@
     $("report-problem").value = editing ? report.problemStatement || "" : "";
     $("report-measures").value = editing ? report.measuresDescription || "" : "";
     $("report-columns").value = editing ? report.columnsDescription || "" : "";
+    $("model-synced-at").textContent = editing && report.modelMetadataSyncedAt
+      ? `Last synced ${new Date(report.modelMetadataSyncedAt).toLocaleString()}`
+      : "Never synced";
+    $("model-report").hidden = true;
+    $("sync-model").disabled = !editing;
     $("report-id").focus();
     resetBrowsePicker();
     loadWorkspaces();
@@ -369,6 +374,51 @@
     } catch (err) {
       errorEl.textContent = err.message;
       errorEl.hidden = false;
+    }
+  });
+
+  $("sync-model").addEventListener("click", async () => {
+    const id = $("report-editing-id").value;
+    if (!id) return;
+
+    const btn = $("sync-model");
+    const panel = $("model-report");
+    btn.disabled = true;
+    btn.textContent = "Syncing…";
+    try {
+      const r = await api(`/api/admin/reports/${encodeURIComponent(id)}/sync-model`, { method: "POST" });
+      $("model-synced-at").textContent = `Last synced ${new Date(r.syncedAt).toLocaleString()}`;
+
+      const rows = [
+        `<div><strong>${r.counts.tables}</strong> tables, <strong>${r.counts.measures}</strong> measures, ` +
+          `<strong>${r.counts.columns}</strong> columns, <strong>${r.counts.relationships}</strong> relationships.</div>`,
+        `<div>${r.reconciliation.describedCount} described by your notes.</div>`,
+      ];
+      // The two lists worth acting on: what the AI will be told nothing
+      // about, and what your notes claim exists but the model has never
+      // heard of.
+      if (r.reconciliation.undescribed.length) {
+        rows.push(
+          `<details><summary>${r.reconciliation.undescribed.length} without a description</summary><pre>` +
+            escapeHtml(r.reconciliation.undescribed.join("\n")) +
+            `</pre></details>`
+        );
+      }
+      if (r.reconciliation.unknownReferences.length) {
+        rows.push(
+          `<div class="model-report-warn">Your notes mention ` +
+            escapeHtml(r.reconciliation.unknownReferences.join(", ")) +
+            `, which this model does not contain. That text is left out of what the AI is given.</div>`
+        );
+      }
+      panel.innerHTML = rows.join("");
+      panel.hidden = false;
+    } catch (err) {
+      panel.innerHTML = `<div class="model-report-warn">${escapeHtml(err.message)}</div>`;
+      panel.hidden = false;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Sync from model";
     }
   });
 

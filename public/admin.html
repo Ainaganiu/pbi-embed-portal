@@ -196,6 +196,15 @@
           <label for="report-columns">Column descriptions (optional)</label>
           <textarea id="report-columns" rows="5" placeholder="Paste what each column holds — allowed values, units, how it relates to other tables — anything a data dictionary would say."></textarea>
         </div>
+        <div class="field">
+          <label>Semantic model</label>
+          <div class="model-sync">
+            <button type="button" class="btn-secondary" id="sync-model" style="width:auto;">Sync from model</button>
+            <span id="model-synced-at" class="hint"></span>
+          </div>
+          <div id="model-report" class="model-report" hidden></div>
+          <div class="hint">Reads the tables, measures, columns and relationships straight from Power BI, so the AI works from exact names rather than what was typed here.</div>
+        </div>
         <div class="report-editor-actions">
           <button class="btn-primary" id="save-report" style="width:auto;">Save report</button>
           <button class="btn-secondary" id="cancel-report-edit">Cancel</button>
