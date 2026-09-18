@@ -217,3 +217,29 @@ test("an inline CLARIFY still parses into questions", () => {
   assert.equal(found.lead, "Two things decide this.");
   assert.deepEqual(parseClarify(found.payload)[0].options, ["Year", "Region"]);
 });
+
+test("schemaContext renders the model card when metadata is present", () => {
+  const got = schemaContext({
+    schemaDescription: "Tickets and SLA outcomes.",
+    modelMetadata: {
+      tables: [{ name: "DataTable", storageMode: "Import", dataCategory: "Regular" }],
+      measures: [{ name: "Total", table: "DataTable", dataType: "Integer", formatString: null, expression: null, description: null }],
+      columns: [],
+      relationships: [],
+    },
+  });
+  assert.match(got, /Read from the semantic model itself/);
+  assert.match(got, /\[Total\]/);
+});
+
+test("schemaContext without metadata behaves exactly as before", () => {
+  const got = schemaContext({
+    schemaDescription: "Data[Genre], [Sales]",
+    measuresDescription: "[Sales] is net revenue.",
+  });
+  assert.equal(got, "Data[Genre], [Sales]\n\nMeasure definitions:\n[Sales] is net revenue.");
+});
+
+test("schemaContext with neither is still the existing placeholder", () => {
+  assert.equal(schemaContext({}), "(not described)");
+});
