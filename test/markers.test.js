@@ -243,3 +243,22 @@ test("schemaContext without metadata behaves exactly as before", () => {
 test("schemaContext with neither is still the existing placeholder", () => {
   assert.equal(schemaContext({}), "(not described)");
 });
+
+// reconcile()/render() call .toLowerCase() on every object's name with no
+// null guard. normalise() now filters nameless rows out before storage, but
+// stored model_metadata is arbitrary JSONB from a DB column -- this is the
+// actual gate that keeps a malformed row from taking every chat question on
+// a report down: any error rendering the card must fall through to the
+// typed-description path, not propagate.
+test("schemaContext falls back to the typed description when rendering the card throws", () => {
+  const got = schemaContext({
+    schemaDescription: "Tickets and SLA outcomes.",
+    modelMetadata: {
+      tables: [{ name: null, storageMode: "Import", dataCategory: "Regular" }],
+      measures: [],
+      columns: [],
+      relationships: [],
+    },
+  });
+  assert.equal(got, "Tickets and SLA outcomes.");
+});

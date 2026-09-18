@@ -150,6 +150,18 @@ test("no metadata renders nothing, so the caller can fall back", () => {
   assert.equal(render(null, { schemaDescription: "anything" }), "");
 });
 
+test("NOTES renders before MEASURES and COLUMNS, so it survives a downstream truncation", () => {
+  const card = render(META, { schemaDescription: "SLA is four hours for priority tickets." });
+  const notesIdx = card.indexOf("\nNOTES");
+  const measuresIdx = card.indexOf("\nMEASURES");
+  const columnsIdx = card.indexOf("\nCOLUMNS");
+  assert.ok(notesIdx !== -1 && measuresIdx !== -1 && columnsIdx !== -1);
+  assert.ok(
+    notesIdx < measuresIdx && notesIdx < columnsIdx,
+    "callers slice this string to a fixed character budget before MEASURES/COLUMNS are exhausted -- NOTES must come first"
+  );
+});
+
 test("a huge model is capped and says what it dropped", () => {
   const many = {
     tables: [{ name: "T", storageMode: "Import", dataCategory: "Regular" }],

@@ -84,6 +84,58 @@ test("missing sections normalise to empty arrays rather than throwing", () => {
   assert.deepEqual(got, { tables: [], measures: [], columns: [], relationships: [] });
 });
 
+// A nameless row must never reach storage: reconcile()/render() call
+// .toLowerCase() on every object's name with no null guard, so a stored
+// row with name: null throws and takes chat down until someone fixes the DB
+// row by hand. Filtering it out here is the defense-in-depth half of that
+// fix; schemaContext()'s try/catch is the actual gate.
+test("a table with no name is dropped rather than stored with name: null", () => {
+  const got = normalise({
+    tables: [
+      { "[Name]": null, "[IsHidden]": false, "[DataCategory]": "Regular", "[StorageMode]": "Import" },
+      { "[Name]": "DataTable", "[IsHidden]": false, "[DataCategory]": "Regular", "[StorageMode]": "Import" },
+    ],
+  });
+  assert.deepEqual(got.tables.map((t) => t.name), ["DataTable"]);
+});
+
+test("a measure with no name is dropped", () => {
+  const got = normalise({
+    tables: [{ "[Name]": "DataTable", "[IsHidden]": false }],
+    measures: [
+      { "[Name]": null, "[Tbl]": "DataTable", "[IsHidden]": false },
+      { "[Name]": "Total", "[Tbl]": "DataTable", "[IsHidden]": false },
+    ],
+  });
+  assert.deepEqual(got.measures.map((m) => m.name), ["Total"]);
+});
+
+test("a column with no name is dropped", () => {
+  const got = normalise({
+    tables: [{ "[Name]": "DataTable", "[IsHidden]": false }],
+    columns: [
+      { "[Name]": null, "[Tbl]": "DataTable" },
+      { "[Name]": "Genre", "[Tbl]": "DataTable" },
+    ],
+  });
+  assert.deepEqual(got.columns.map((c) => c.name), ["Genre"]);
+});
+
+test("a relationship with no rendered text is dropped", () => {
+  const got = normalise({
+    tables: [
+      { "[Name]": "DataTable", "[IsHidden]": false },
+      { "[Name]": "Date", "[IsHidden]": false },
+    ],
+    relationships: [
+      { "[Rel]": null, "[IsActive]": true, "[FromTable]": "DataTable", "[ToTable]": "Date" },
+      { "[Rel]": "'DataTable'[X] *[<-]1 'Date'[Y]", "[IsActive]": true, "[FromTable]": "DataTable", "[ToTable]": "Date" },
+    ],
+  });
+  assert.equal(got.relationships.length, 1);
+  assert.equal(got.relationships[0].text, "'DataTable'[X] *[<-]1 'Date'[Y]");
+});
+
 const path = require("node:path");
 const ROOT = path.join(__dirname, "..");
 
@@ -101,6 +153,32 @@ test("a rejected query resolves to null rather than propagating", async () => {
 
   const got = await fetchModelMetadata({}, { workspaceId: "w", datasetId: "d" });
   assert.equal(got, null, "chat must survive a model that refuses to describe itself");
+
+  if (original) require.cache[full] = original;
+  else delete require.cache[full];
+});
+
+test("a successful read with zero tables resolves to null, not an empty-but-truthy object", async () => {
+  const full = require.resolve(path.join(ROOT, "lib/powerbi"));
+  const original = require.cache[full];
+  require.cache[full] = {
+    id: full,
+    filename: full,
+    loaded: true,
+    // Shaped exactly like a real (successful) response, just empty --
+    // an unexpected shape or a permission mode that yields no rows rather
+    // than an error, distinct from executeQuery throwing.
+    exports: { executeQuery: async () => [] },
+  };
+  delete require.cache[require.resolve(path.join(ROOT, "lib/modelMetadata"))];
+  const { fetchModelMetadata } = require(path.join(ROOT, "lib/modelMetadata"));
+
+  const got = await fetchModelMetadata({}, { workspaceId: "w", datasetId: "d" });
+  assert.equal(
+    got,
+    null,
+    "an empty-but-successful read must not silently replace a good typed description with an empty card"
+  );
 
   if (original) require.cache[full] = original;
   else delete require.cache[full];

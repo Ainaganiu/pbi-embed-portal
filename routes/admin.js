@@ -14,7 +14,6 @@ const {
   clearTokenCache,
   listWorkspaces,
   listReports,
-  executeQuery,
 } = require("../lib/powerbi");
 const { fetchModelMetadata } = require("../lib/modelMetadata");
 const { reconcile } = require("../lib/modelCard");
