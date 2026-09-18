@@ -32,7 +32,14 @@ which reads the tables, columns, measures, format strings and relationships
 straight from Power BI. Those are merged with the descriptions typed in admin
 into one card the AI is given, so it works from exact names rather than
 remembered ones — and the sync reports anything your notes mention that the
-model does not actually contain.
+model does not actually contain. Where the tenant has a Fabric-capable
+workspace and the service principal has been granted Fabric API permissions
+(`Dataset.Read.All` / `SemanticModel.Read.All`), the sync also reads each
+measure's and calculated column's real DAX definition, so the AI writes
+queries grounded in the model's actual formulas rather than only its names
+and types. This is best-effort — a workspace without Fabric capacity, or a
+service principal without those permissions, still gets a successful sync
+with everything except the real DAX.
 
 All configuration — Power BI credentials, the report registry (including each
 report's data-model description used to generate DAX), the LLM provider/key,
@@ -56,6 +63,7 @@ lib/errors.js                      # Failure -> message the user can act on
 lib/starters.js                     # Report-specific opening questions
 lib/modelMetadata.js                 # Reads the semantic model via DAX INFO functions
 lib/modelCard.js                      # Merges that with the admin's descriptions
+lib/modelDefinition.js                # Reads real measure/column DAX via the Fabric API
 lib/chartChoice.js                   # Rows -> chart type and spec
 lib/chatHelpers.js                    # Shared chat helpers: history sanitising, report context, code-fence stripping
 lib/daxSkills.js                       # DAX authoring rules and per-pattern skills fed to prompts
