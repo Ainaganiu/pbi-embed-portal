@@ -27,6 +27,13 @@ progress stages, and any chart is built from the result rows in code and drawn
 with d3 in IBCS notation. Identical repeat questions on the query path are
 served from an in-memory cache.
 
+Each report can also be synced against its semantic model from `/admin`,
+which reads the tables, columns, measures, format strings and relationships
+straight from Power BI. Those are merged with the descriptions typed in admin
+into one card the AI is given, so it works from exact names rather than
+remembered ones — and the sync reports anything your notes mention that the
+model does not actually contain.
+
 All configuration — Power BI credentials, the report registry (including each
 report's data-model description used to generate DAX), the LLM provider/key,
 and portal branding — lives in Postgres and is edited through `/admin`, gated
@@ -47,6 +54,8 @@ lib/budgets.js                   # Every size and token cap, in one place
 lib/route.js                      # Model router + regex fallback
 lib/errors.js                      # Failure -> message the user can act on
 lib/starters.js                     # Report-specific opening questions
+lib/modelMetadata.js                 # Reads the semantic model via DAX INFO functions
+lib/modelCard.js                      # Merges that with the admin's descriptions
 lib/chartChoice.js                   # Rows -> chart type and spec
 lib/chatHelpers.js                    # Shared chat helpers: history sanitising, report context, code-fence stripping
 lib/daxSkills.js                       # DAX authoring rules and per-pattern skills fed to prompts
