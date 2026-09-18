@@ -7,6 +7,7 @@ const {
   createReport,
   updateReport,
   deleteReport,
+  setModelMetadata,
 } = require("../lib/settings");
 const {
   getAadToken,
@@ -15,6 +16,8 @@ const {
   listReports,
   executeQuery,
 } = require("../lib/powerbi");
+const { fetchModelMetadata } = require("../lib/modelMetadata");
+const { reconcile } = require("../lib/modelCard");
 
 const router = express.Router();
 router.use(requireAdmin);
@@ -128,71 +131,49 @@ router.delete("/reports/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------------------------------------------------------------------------
-// THROWAWAY SPIKE — delete this whole block once the question is answered.
-//
-// Can the service principal read the semantic model's own metadata? DAX INFO
-// functions run as ordinary table functions inside EVALUATE, so they go
-// through executeQueries like any other query -- but Microsoft's docs say
-// they "require semantic model admin permissions", which is a higher bar than
-// running a query. This either works or returns an authorization error, and
-// nothing short of asking the live model settles it.
-//
-// Hit: GET /api/admin/probe-metadata/<reportId> while logged into /admin.
-// ---------------------------------------------------------------------------
-const PROBES = [
-  [
-    "measures",
-    `EVALUATE SELECTCOLUMNS(INFO.VIEW.MEASURES(), "Name", [Name], "Tbl", [Table], "DataType", [DataType], "FormatString", [FormatString], "Expression", [Expression], "Description", [Description], "IsHidden", [IsHidden])`,
-  ],
-  [
-    "columns",
-    `EVALUATE SELECTCOLUMNS(FILTER(INFO.VIEW.COLUMNS(), [IsHidden] = FALSE() && [Type] <> "RowNumber"), "Name", [Name], "Tbl", [Table], "DataType", [DataType], "FormatString", [FormatString], "SummarizeBy", [SummarizeBy], "Description", [Description])`,
-  ],
-  [
-    "tables",
-    `EVALUATE SELECTCOLUMNS(INFO.VIEW.TABLES(), "Name", [Name], "IsHidden", [IsHidden], "DataCategory", [DataCategory], "StorageMode", [StorageMode])`,
-  ],
-  [
-    "relationships",
-    `EVALUATE SELECTCOLUMNS(INFO.VIEW.RELATIONSHIPS(), "Rel", [Relationship], "IsActive", [IsActive], "FromTable", [FromTable], "ToTable", [ToTable])`,
-  ],
-];
-
-router.get("/probe-metadata/:reportId", async (req, res) => {
+router.post("/reports/:id/sync-model", async (req, res) => {
   const reports = await getReports();
-  const report = (reports || []).find((r) => r.id === req.params.reportId);
-  if (!report) return res.status(404).json({ error: `Unknown report "${req.params.reportId}"` });
-  if (!report.datasetId) return res.status(400).json({ error: "That report has no datasetId" });
-
-  const settings = await getSettings();
-  const credentials = {
-    tenantId: settings.pbiTenantId,
-    clientId: settings.pbiClientId,
-    clientSecret: settings.pbiClientSecret,
-  };
-
-  const out = [];
-  for (const [name, dax] of PROBES) {
-    try {
-      const rows = await executeQuery(credentials, {
-        workspaceId: report.workspaceId,
-        datasetId: report.datasetId,
-        dax,
-      });
-      out.push({
-        probe: name,
-        ok: true,
-        rowCount: rows.length,
-        columns: rows.length ? Object.keys(rows[0]) : [],
-        rows,
-      });
-    } catch (err) {
-      out.push({ probe: name, ok: false, error: err.message.slice(0, 500) });
-    }
+  const report = (reports || []).find((r) => r.id === req.params.id);
+  if (!report) return res.status(404).json({ error: `Unknown report "${req.params.id}"` });
+  if (!report.datasetId) {
+    return res.status(400).json({ error: "This report has no dataset to read." });
   }
 
-  res.json({ report: report.id, probes: out });
+  const settings = await getSettings();
+  const metadata = await fetchModelMetadata(
+    {
+      tenantId: settings.pbiTenantId,
+      clientId: settings.pbiClientId,
+      clientSecret: settings.pbiClientSecret,
+    },
+    { workspaceId: report.workspaceId, datasetId: report.datasetId }
+  );
+
+  // Deliberately not written: a failed refresh must not leave the report
+  // worse off than it was before someone pressed the button.
+  if (!metadata) {
+    return res.status(502).json({
+      error: "Couldn't read this model's metadata. The service principal may not have access to it.",
+    });
+  }
+
+  const saved = await setModelMetadata(report.id, metadata);
+  const { described, undescribed, unknownReferences } = reconcile(metadata, saved);
+
+  res.json({
+    syncedAt: saved.modelMetadataSyncedAt,
+    counts: {
+      tables: metadata.tables.length,
+      measures: metadata.measures.length,
+      columns: metadata.columns.length,
+      relationships: metadata.relationships.length,
+    },
+    reconciliation: {
+      describedCount: described.length,
+      undescribed: undescribed.map((u) => `${u.kind === "measure" ? "[" + u.name + "]" : "'" + u.table + "'[" + u.name + "]"}`),
+      unknownReferences,
+    },
+  });
 });
 
 module.exports = router;
